@@ -22,51 +22,37 @@ a specific Qt style — it leaves that to the platform.
 
 ## Shipping to Windows
 
-This must be done **on a Windows machine or VM** — PyInstaller builds
-platform-specific binaries and cannot cross-compile a Windows `.exe` from
-macOS. There's nothing left to change in the code; these are the steps to
-turn this folder into a distributable `.exe`.
+Automated via GitHub Actions — no Windows machine needed to build.
+`.github/workflows/build.yml` runs `pyinstaller music_organizer.spec` on a
+`windows-latest` hosted runner on every push, and on a version tag (`v1.2.3`)
+also publishes a GitHub Release with `MusicLibraryOrganizer.exe` attached.
 
-1. **Copy the project to the Windows machine.** Zip this folder and transfer
-   it (or clone it there if it's in git). Exclude `venv/` and `__pycache__/`
-   if you zip manually — they're mac-specific and will be recreated.
-2. **Install Python 3.11+ on Windows** from [python.org](https://www.python.org/downloads/windows/)
-   if it isn't already there. On the installer's first screen, check **"Add
-   python.exe to PATH"**.
-3. **Open PowerShell** and `cd` into the copied project folder.
-4. **Create and activate a fresh Windows venv** (the mac one won't work
-   here):
-   ```powershell
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-5. **Install dependencies:**
-   ```powershell
-   pip install -r requirements.txt
-   pip install pyinstaller
-   ```
-6. **Build the executable:**
-   ```powershell
-   pyinstaller music_organizer.spec
-   ```
-7. **Find and test it** at `dist\MusicLibraryOrganizer.exe`. Double-click it
-   (don't run it from PowerShell this time — you want to confirm it works
-   the way an end user will launch it). Confirm: it opens with a native
-   Windows look (in-window menu bar, native folder picker), a scan/preview/
-   move cycle works end to end, and closing the window while a scan is
-   running shows the "cancel and quit?" prompt instead of hanging.
-8. **Expect a SmartScreen warning the first time you run it.** Since the
-   `.exe` isn't code-signed, Windows will likely show "Windows protected
-   your PC." Click **More info → Run anyway**. This is normal for
-   unsigned PyInstaller output and not a bug — anyone you send the `.exe`
-   to will see it once too. Antivirus tools occasionally flag unsigned
-   PyInstaller binaries as suspicious for the same reason (a known false
-   positive class, not a real issue with this app); code-signing is the
-   only way to avoid it and is out of scope unless you plan wider
-   distribution.
-9. **Distribute** by zipping `dist\MusicLibraryOrganizer.exe` and sending
-   it — it's self-contained and doesn't need Python installed on the
-   receiving machine.
+**To ship a new version:**
+```bash
+# bump organizer/__version__.py first, then:
+git tag v0.1.1
+git push origin v0.1.1
+```
+That triggers the build + release. Download the `.exe` from the release's
+Assets, or — once someone's already running an earlier version — the app
+checks for updates on launch itself (see below) and offers to install the
+new one with no manual download needed.
+
+**First run on Windows still needs one manual step**: since the `.exe` isn't
+code-signed, Windows will show "Windows protected your PC" (SmartScreen).
+Click **More info → Run anyway**. This is normal for unsigned PyInstaller
+output, not a bug. Antivirus tools occasionally flag unsigned PyInstaller
+binaries as suspicious for the same reason (a known false-positive class);
+code-signing is the only way to avoid it and is out of scope unless you plan
+wider distribution.
+
+## Self-update
+
+The Windows `.exe` checks `github.com/ygb4520-cmd/music-library-organizer`'s
+latest release on launch (silently — only interrupts you if there's actually
+something new) and offers a one-click install via **Help → Check for
+Updates...** too. This only does anything when running the built `.exe`; it's
+a no-op when running from source (`python main.py`) during development.
 
 ## Supported formats
 
