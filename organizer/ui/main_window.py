@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import planner
+from .. import planner, updater
+from ..__version__ import __version__
 from ..mover import MoveWorker
 from ..scanner import ScanWorker
 from .confirm_dialog import confirm_move
@@ -36,6 +37,8 @@ class MainWindow(QMainWindow):
         self._move_worker: MoveWorker | None = None
         self._scan_progress = None
         self._move_progress = None
+        self._update_check_worker: updater.UpdateCheckWorker | None = None
+        self._update_apply_worker: updater.UpdateApplyWorker | None = None
 
         self._build_menu()
         self._build_central_widget()
@@ -47,10 +50,15 @@ class MainWindow(QMainWindow):
         # shutdown is a hard abort() in Qt, so this must never be skipped.
         QApplication.instance().aboutToQuit.connect(self.shutdown_workers)
 
+        # Silent on-launch check -- only bothers the user if there's
+        # actually something new. No-op when running from source (dev mode).
+        self._check_for_updates(silent=True)
+
     def shutdown_workers(self):
-        for worker in (self._scan_worker, self._move_worker):
+        for worker in (self._scan_worker, self._move_worker, self._update_check_worker):
             if worker is not None and worker.isRunning():
-                worker.cancel()
+                if hasattr(worker, "cancel"):
+                    worker.cancel()
                 worker.wait()
 
     # -- UI construction -------------------------------------------------
@@ -74,6 +82,9 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
         about_action.triggered.connect(self._show_about)
+
+        update_action = help_menu.addAction("Check for &Updates...")
+        update_action.triggered.connect(lambda: self._check_for_updates(silent=False))
 
     def _build_central_widget(self):
         central = QWidget()
@@ -132,10 +143,60 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "About Music Library Organizer",
-            "Music Library Organizer\n\n"
+            f"Music Library Organizer v{__version__}\n\n"
             "Reorganizes audio files into Album Artist / Album folders based on "
             "existing tags, without modifying tags. Files are moved, not copied.",
         )
+
+    # -- Self-update ----------------------------------------------------
+
+    def _check_for_updates(self, silent: bool):
+        if self._update_check_worker is not None and self._update_check_worker.isRunning():
+            return
+        self._update_check_silent = silent
+        self._update_check_worker = updater.UpdateCheckWorker()
+        self._update_check_worker.found_update.connect(self._on_update_found)
+        self._update_check_worker.no_update.connect(self._on_no_update)
+        self._update_check_worker.start()
+
+    def _on_no_update(self):
+        if not self._update_check_silent:
+            QMessageBox.information(
+                self, "No Updates", f"You're on the latest version (v{__version__})."
+            )
+
+    def _on_update_found(self, version: str, asset_url: str):
+        reply = QMessageBox.question(
+            self,
+            "Update Available",
+            f"A new version (v{version}) is available. Download and install it now?\n\n"
+            "The app will restart automatically once it's installed.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._update_apply_had_error = False
+        self._update_apply_worker = updater.UpdateApplyWorker(asset_url)
+        self._update_apply_worker.progress_text.connect(
+            lambda text: self.statusBar().showMessage(text)
+        )
+        self._update_apply_worker.failed.connect(self._on_update_failed)
+        self._update_apply_worker.finished.connect(self._on_update_apply_finished)
+        self._update_apply_worker.start()
+
+    def _on_update_apply_finished(self):
+        # A successful run means a detached helper is waiting to relaunch
+        # the app under a new process -- quit so it can take over. If it
+        # failed, _on_update_failed already reported that and set the flag
+        # below, so there's nothing to quit for.
+        if not self._update_apply_had_error:
+            QApplication.instance().quit()
+
+    def _on_update_failed(self, message: str):
+        self._update_apply_had_error = True
+        QMessageBox.critical(self, "Update Failed", f"Could not install the update:\n{message}")
 
     def _update_folder_label(self):
         if self.source_root is None:
