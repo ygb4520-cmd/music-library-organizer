@@ -67,3 +67,7 @@ carry embedded tags.
   now-empty folders left behind in the source afterward.
 - **Does not**: write/modify/strip any audio tags, rename files, copy files
   (it always moves), or auto-resolve duplicates/conflicts.
+
+## Support / Feedback
+
+Found a bug or have a question? Open an issue: https://github.com/ygb4520-cmd/music-library-organizer/issues
