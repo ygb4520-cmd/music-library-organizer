@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
-from . import inference
+from . import artist_utils, inference, settings
 from .models import MetadataSource, PlanItem, Status, TrackInfo
 
 _INVALID_WIN_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -28,6 +28,7 @@ def build_plan(
     tracks: List[TrackInfo], source_root: Path, destination_root: Path
 ) -> List[PlanItem]:
     items: List[PlanItem] = []
+    main_artist_only = settings.get_multi_artist_mode() == settings.MULTI_ARTIST_MAIN_ONLY
 
     for track in tracks:
         if inference.needs_manual_review(track):
@@ -42,7 +43,15 @@ def build_plan(
             )
             continue
 
-        album_artist = sanitize_component(track.album_artist)
+        folder_artist = track.album_artist
+        if main_artist_only:
+            # Same Settings preference the metadata-lookup preview uses --
+            # applies here too so folder names are consistent with it,
+            # e.g. "Drake feat. Rihanna" -> the "Drake" folder, not a
+            # separate one per featured-artist combination.
+            folder_artist = artist_utils.main_artist(folder_artist)
+
+        album_artist = sanitize_component(folder_artist)
         album = sanitize_component(track.album)
         dest_path = destination_root / album_artist / album / track.filename
 
