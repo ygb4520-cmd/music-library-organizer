@@ -5,6 +5,18 @@ reorganizes files into `Album Artist/Album/original filename` — moving files,
 never renaming or retagging them. Duplicates and low-confidence guesses are
 flagged in a preview screen; nothing moves until you explicitly confirm.
 
+## Download
+
+**Windows**: go to **[the latest release](https://github.com/ygb4520-cmd/music-library-organizer/releases/latest)**,
+scroll to **Assets**, and click `MusicLibraryOrganizer.exe`. Run it — if
+SmartScreen warns "Windows protected your PC," click **More info** → **Run
+anyway** (normal for this unsigned build, not a bug). Once installed, it
+checks for updates itself.
+
+**Mac**: there's no separate download — this app only ships a compiled
+build for Windows. On a Mac, run it from source instead (a few one-time
+Terminal commands, not a double-click app) — see below.
+
 ## Developing on macOS
 
 ```bash
