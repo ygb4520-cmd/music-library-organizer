@@ -26,6 +26,8 @@ from .confirm_dialog import confirm_move
 from .metadata_preview_dialog import MetadataPreviewDialog
 from .preview_view import PreviewView
 from .progress_dialog import make_progress_dialog
+from .settings_dialog import SettingsDialog
+from .tag_editor_dialog import TagEditorDialog
 
 
 class MainWindow(QMainWindow):
@@ -87,6 +89,13 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("&Tools")
         lookup_action = tools_menu.addAction("&Look Up Missing Metadata...")
         lookup_action.triggered.connect(self.lookup_missing_metadata)
+
+        edit_tags_action = tools_menu.addAction("&Edit Tags...")
+        edit_tags_action.triggered.connect(self.edit_selected_tags)
+
+        tools_menu.addSeparator()
+        settings_action = tools_menu.addAction("&Settings...")
+        settings_action.triggered.connect(self.open_settings)
 
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
@@ -402,3 +411,26 @@ class MainWindow(QMainWindow):
         if self._metadata_progress is not None:
             self._metadata_progress.close()
         QMessageBox.critical(self, "Lookup Failed", f"Could not complete the metadata lookup:\n{message}")
+
+    # -- Settings & manual tag editing --------------------------------------
+
+    def open_settings(self):
+        SettingsDialog(self).exec()
+
+    def edit_selected_tags(self):
+        selected_rows = self.preview.table.selectionModel().selectedRows() if self.preview.table.selectionModel() else []
+        if not selected_rows:
+            QMessageBox.information(
+                self, "No File Selected", "Select a file in the list first, then choose Edit Tags."
+            )
+            return
+
+        # Only the first selected row -- editing several files' tags at once
+        # in one form doesn't make sense (they'd have different values).
+        proxy_index = selected_rows[0]
+        source_index = self.preview.proxy.mapToSource(proxy_index)
+        item = self.preview.model.items()[source_index.row()]
+
+        dialog = TagEditorDialog(item.track, parent=self)
+        if dialog.exec():
+            self.start_scan()  # tags changed on disk -- rescan to reflect it

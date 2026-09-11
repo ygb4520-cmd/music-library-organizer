@@ -67,11 +67,10 @@ carry embedded tags.
   now-empty folders left behind in the source afterward.
 - **Does not by default**: write/modify/strip any audio tags, rename files,
   copy files (it always moves), or auto-resolve duplicates/conflicts.
-- **Opt-in exception**: **Tools → Look Up Missing Metadata...** searches
-  MusicBrainz's free database for files with no tag data at all, guessing
-  artist/title from the filename. Nothing is written until you review and
-  explicitly confirm matches in a preview screen — this is the one place in
-  the app that writes tags, and only for files you've checked.
+- **Opt-in exceptions**: **Tools → Look Up Missing Metadata...** and
+  **Tools → Edit Tags...** — see below. Nothing is written to any file
+  until you explicitly confirm in one of these two screens; everywhere
+  else in the app stays strictly read-only.
 
 ## Looking up missing metadata
 
@@ -81,20 +80,47 @@ data mutagen can read), **Tools → Look Up Missing Metadata...**:
 1. Guesses artist/title from the filename (same pattern-matching already
    used for folder-placement fallback — e.g. `Artist - Title.mp3`).
 2. Searches MusicBrainz's free API (no key needed) for a matching recording.
-3. Shows every result in a preview table with a confidence score. Matches
-   scoring 80%+ are pre-checked; lower-confidence ones need a deliberate
-   opt-in per row.
-4. Only writes ARTIST/TITLE/ALBUM tags to files you leave checked, after one
+3. If that finds nothing confident **and** an AcoustID API key is set in
+   Settings, falls back to audio fingerprinting — identifies the song from
+   its actual audio content via the bundled `fpcalc` tool, regardless of
+   filename. Slower (has to read the audio), which is why it's a fallback,
+   not the default.
+4. Shows every result in a preview table: which strategy found it ("Found
+   Via" column), a confidence score, and editable Artist/Title/Album
+   fields — fix anything before writing. Matches scoring 80%+ are
+   pre-checked; lower-confidence ones need a deliberate opt-in per row.
+   Click any column header to re-sort (default order is set in Settings).
+5. For tracks with a "feat./ft./featuring" credit, a "Main Artist Only"
+   checkbox lets you drop the featured artist when writing — defaults to
+   your Settings preference, overridable per row. (Deliberately does *not*
+   split on "&", ",", or "/" — those are too often part of a real single
+   act's name, e.g. "Earth, Wind & Fire", to safely treat as separators.)
+6. Only writes ARTIST/TITLE/ALBUM tags to files you leave checked, after one
    more explicit confirmation.
 
-Accuracy depends entirely on the filename — garbled names ("track03.mp3")
-or very obscure/independent releases not in MusicBrainz's database will
-correctly come back with no match rather than a wrong guess. A more accurate
-audio-fingerprinting fallback (identifies the song from its actual audio
-content, not just the filename) is a possible future addition but isn't
-built yet — it needs bundling an extra binary (`fpcalc`) and a free AcoustID
-API key, real added complexity saved for if the filename-only approach
-proves insufficient in practice.
+Some tracks genuinely won't be found by either strategy — very
+obscure/independent releases may not be in MusicBrainz's or AcoustID's
+databases at all. That correctly comes back as "no match" rather than a
+wrong guess.
+
+## Editing tags manually
+
+**Tools → Edit Tags...** (select a file in the list first) opens a plain
+form for Artist/Title/Album/Album Artist/Track # on that one file — for
+fixing something by hand, independent of the online lookup. Same
+explicit-Save-required rule as everywhere else that touches tags.
+
+## Settings
+
+**Tools → Settings...**:
+- **Sort order** for the metadata-lookup results table (confidence
+  high-to-low, low-to-high, or A-Z) — just the default; you can still
+  re-sort by clicking any column header afterward.
+- **Multi-artist default** — keep the full artist credit, or default to
+  main-artist-only (per-row override always available in the lookup table).
+- **AcoustID API key** — free at [acoustid.org/api-key](https://acoustid.org/api-key).
+  Only used for the fingerprinting fallback; leave blank to rely on
+  filename search alone.
 
 ## Support / Feedback
 

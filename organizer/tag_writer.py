@@ -1,10 +1,17 @@
-"""Writes artist/title/album tags via mutagen's "easy" interface, which
-covers MP3/ID3, FLAC, Ogg Vorbis/Opus, and MP4/M4A with one consistent API.
+"""Writes artist/title/album/album_artist/track_number tags via mutagen's
+"easy" interface, which covers MP3/ID3, FLAC, Ogg Vorbis/Opus, and MP4/M4A
+with one consistent API.
 
 This is the one place in the app that writes to audio files -- everywhere
 else is strictly read-only by design (see README's "What it does and does
-not do"). Only ever called after the user explicitly confirms a specific
-match in the metadata-lookup preview dialog; never automatic.
+not do"). Only ever called after the user explicitly confirms: either a
+specific match in the metadata-lookup preview dialog, or a manual edit in
+the standalone tag editor. Never automatic.
+
+Each field is None (leave untouched) or a string ("" explicitly clears the
+field, matching what a user emptying a text box in the editor would expect
+-- unlike an earlier version of this function, where a falsy value was
+silently skipped, which meant there was no way to actually blank a field).
 """
 from __future__ import annotations
 
@@ -32,6 +39,8 @@ def write_tags(
     artist: Optional[str] = None,
     title: Optional[str] = None,
     album: Optional[str] = None,
+    album_artist: Optional[str] = None,
+    track_number: Optional[str] = None,
 ) -> None:
     ext = path.suffix.lower()
     if not can_write_tags(ext):
@@ -51,12 +60,23 @@ def write_tags(
         except Exception as e:
             raise TagWriteError(f"Could not create a tag container: {e}") from e
 
-    if artist:
-        audio["artist"] = artist
-    if title:
-        audio["title"] = title
-    if album:
-        audio["album"] = album
+    fields = {
+        "artist": artist,
+        "title": title,
+        "album": album,
+        "albumartist": album_artist,
+        "tracknumber": track_number,
+    }
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if value == "":
+            # Clearing a field: mutagen's easy interface raises if you try
+            # to delete a key that isn't present, so check first.
+            if key in audio:
+                del audio[key]
+        else:
+            audio[key] = value
 
     try:
         audio.save()
