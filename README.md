@@ -65,8 +65,36 @@ carry embedded tags.
 
 - **Does**: read tags, move files into a new folder structure, clean up
   now-empty folders left behind in the source afterward.
-- **Does not**: write/modify/strip any audio tags, rename files, copy files
-  (it always moves), or auto-resolve duplicates/conflicts.
+- **Does not by default**: write/modify/strip any audio tags, rename files,
+  copy files (it always moves), or auto-resolve duplicates/conflicts.
+- **Opt-in exception**: **Tools → Look Up Missing Metadata...** searches
+  MusicBrainz's free database for files with no tag data at all, guessing
+  artist/title from the filename. Nothing is written until you review and
+  explicitly confirm matches in a preview screen — this is the one place in
+  the app that writes tags, and only for files you've checked.
+
+## Looking up missing metadata
+
+For files with no tags whatsoever (not just incomplete — genuinely no tag
+data mutagen can read), **Tools → Look Up Missing Metadata...**:
+
+1. Guesses artist/title from the filename (same pattern-matching already
+   used for folder-placement fallback — e.g. `Artist - Title.mp3`).
+2. Searches MusicBrainz's free API (no key needed) for a matching recording.
+3. Shows every result in a preview table with a confidence score. Matches
+   scoring 80%+ are pre-checked; lower-confidence ones need a deliberate
+   opt-in per row.
+4. Only writes ARTIST/TITLE/ALBUM tags to files you leave checked, after one
+   more explicit confirmation.
+
+Accuracy depends entirely on the filename — garbled names ("track03.mp3")
+or very obscure/independent releases not in MusicBrainz's database will
+correctly come back with no match rather than a wrong guess. A more accurate
+audio-fingerprinting fallback (identifies the song from its actual audio
+content, not just the filename) is a possible future addition but isn't
+built yet — it needs bundling an extra binary (`fpcalc`) and a free AcoustID
+API key, real added complexity saved for if the filename-only approach
+proves insufficient in practice.
 
 ## Support / Feedback
 

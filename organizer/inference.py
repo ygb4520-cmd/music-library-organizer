@@ -59,6 +59,13 @@ def _parse_filename(stem: str) -> dict:
     return {}
 
 
+def guess_from_filename(stem: str) -> dict:
+    """Public wrapper around the same filename-pattern guessing used for
+    folder-placement fallback, reused by metadata_lookup.py so both features
+    parse filenames identically instead of duplicating the pattern list."""
+    return _parse_filename(stem)
+
+
 def apply_fallback(track: TrackInfo, source_root: Path) -> TrackInfo:
     """Fill missing artist/album/title fields on `track` using filename and
     folder heuristics. Never overwrites a value already present from tags."""

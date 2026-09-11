@@ -18,9 +18,12 @@ from PySide6.QtWidgets import (
 
 from .. import planner, updater
 from ..__version__ import __version__
+from ..metadata_worker import MetadataLookupWorker
+from ..models import MetadataSource
 from ..mover import MoveWorker
 from ..scanner import ScanWorker
 from .confirm_dialog import confirm_move
+from .metadata_preview_dialog import MetadataPreviewDialog
 from .preview_view import PreviewView
 from .progress_dialog import make_progress_dialog
 
@@ -39,6 +42,8 @@ class MainWindow(QMainWindow):
         self._move_progress = None
         self._update_check_worker: updater.UpdateCheckWorker | None = None
         self._update_apply_worker: updater.UpdateApplyWorker | None = None
+        self._metadata_worker: MetadataLookupWorker | None = None
+        self._metadata_progress = None
 
         self._build_menu()
         self._build_central_widget()
@@ -55,7 +60,7 @@ class MainWindow(QMainWindow):
         self._check_for_updates(silent=True)
 
     def shutdown_workers(self):
-        for worker in (self._scan_worker, self._move_worker, self._update_check_worker):
+        for worker in (self._scan_worker, self._move_worker, self._update_check_worker, self._metadata_worker):
             if worker is not None and worker.isRunning():
                 if hasattr(worker, "cancel"):
                     worker.cancel()
@@ -78,6 +83,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         exit_action = file_menu.addAction("E&xit")
         exit_action.triggered.connect(self.close)
+
+        tools_menu = self.menuBar().addMenu("&Tools")
+        lookup_action = tools_menu.addAction("&Look Up Missing Metadata...")
+        lookup_action.triggered.connect(self.lookup_missing_metadata)
 
         help_menu = self.menuBar().addMenu("&Help")
         about_action = help_menu.addAction("&About")
@@ -325,3 +334,71 @@ class MainWindow(QMainWindow):
             f"Move complete: {len(result.moved)} moved, {len(result.failed)} failed."
         )
         self.start_scan()
+
+    # -- Metadata lookup --------------------------------------------------
+
+    def lookup_missing_metadata(self):
+        if self._metadata_worker is not None and self._metadata_worker.isRunning():
+            return
+
+        items = self.preview.model.items()
+        if not items:
+            QMessageBox.information(
+                self, "No Files Scanned", "Scan a folder first, then look up missing metadata."
+            )
+            return
+
+        candidates = [item.track for item in items if item.track.metadata_source == MetadataSource.NONE]
+        if not candidates:
+            QMessageBox.information(
+                self, "Nothing to Look Up", "Every scanned file already has tag data — nothing is unknown."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Look Up Missing Metadata",
+            f"{len(candidates)} file(s) have no tag data. Search MusicBrainz's free online "
+            "database for likely matches based on filename?\n\n"
+            "This only looks things up — nothing is written to any file until you review and "
+            "confirm matches in the next screen.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._metadata_progress = make_progress_dialog(
+            self, "Looking up metadata online...", on_cancel=self._cancel_metadata_lookup
+        )
+        self._metadata_worker = MetadataLookupWorker(candidates)
+        self._metadata_worker.progress.connect(self._on_metadata_progress)
+        self._metadata_worker.finished_lookup.connect(self._on_metadata_finished)
+        self._metadata_worker.failed.connect(self._on_metadata_failed)
+        self._metadata_worker.start()
+
+    def _cancel_metadata_lookup(self):
+        if self._metadata_worker is not None:
+            self._metadata_worker.cancel()
+
+    def _on_metadata_progress(self, done: int, total: int):
+        if self._metadata_progress is None:
+            return
+        self._metadata_progress.setMaximum(max(total, 1))
+        self._metadata_progress.setValue(done)
+        self._metadata_progress.setLabelText(f"Looking up metadata online... {done}/{total}")
+
+    def _on_metadata_finished(self, results):
+        if self._metadata_worker is not None:
+            self._metadata_worker.wait()
+        if self._metadata_progress is not None:
+            self._metadata_progress.setValue(self._metadata_progress.maximum())
+
+        dialog = MetadataPreviewDialog(results, parent=self)
+        if dialog.exec():
+            self.start_scan()  # tags changed on disk -- rescan to reflect it
+
+    def _on_metadata_failed(self, message: str):
+        if self._metadata_progress is not None:
+            self._metadata_progress.close()
+        QMessageBox.critical(self, "Lookup Failed", f"Could not complete the metadata lookup:\n{message}")
