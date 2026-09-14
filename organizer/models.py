@@ -53,6 +53,11 @@ class PlanItem:
     include: bool = True
     notes: str = ""
     move_error: Optional[str] = None
+    # How a DUPLICATE status was determined -- "fingerprint" | "tag" | "filename"
+    # (checked in that priority order by planner._flag_duplicates). None for
+    # any non-duplicate item. Surfaced in the post-scan duplicate review popup
+    # so the user can see how confident each grouping is.
+    dup_method: Optional[str] = None
 
     @property
     def source_path(self) -> Path:

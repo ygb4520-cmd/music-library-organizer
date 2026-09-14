@@ -16,13 +16,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import planner, updater
+from .. import updater
 from ..__version__ import __version__
 from ..metadata_worker import MetadataLookupWorker
-from ..models import MetadataSource
+from ..models import MetadataSource, Status
 from ..mover import MoveWorker
 from ..scanner import ScanWorker
 from .confirm_dialog import confirm_move
+from .duplicate_review_dialog import DuplicateReviewDialog
 from .metadata_preview_dialog import MetadataPreviewDialog
 from .preview_view import PreviewView
 from .progress_dialog import make_progress_dialog
@@ -261,7 +262,7 @@ class MainWindow(QMainWindow):
         self._scan_progress = make_progress_dialog(
             self, "Scanning music library...", on_cancel=self._cancel_scan
         )
-        self._scan_worker = ScanWorker(self.source_root)
+        self._scan_worker = ScanWorker(self.source_root, self.destination_root)
         self._scan_worker.progress.connect(self._on_scan_progress)
         self._scan_worker.finished_scan.connect(self._on_scan_finished)
         self._scan_worker.failed.connect(self._on_scan_failed)
@@ -278,15 +279,22 @@ class MainWindow(QMainWindow):
         self._scan_progress.setValue(done)
         self._scan_progress.setLabelText(f"Reading tags... {done}/{total}")
 
-    def _on_scan_finished(self, tracks):
+    def _on_scan_finished(self, items):
+        # The plan (including duplicate detection) is now built inside
+        # ScanWorker itself, off the GUI thread -- see scanner.py's
+        # docstring for why (audio-fingerprint duplicate matching can make
+        # a network call per file).
         if self._scan_worker is not None:
             self._scan_worker.wait()
         if self._scan_progress is not None:
             self._scan_progress.setValue(self._scan_progress.maximum())
-        items = planner.build_plan(tracks, self.source_root, self.destination_root)
         self.preview.set_items(items)
         self.move_button.setEnabled(len(items) > 0)
-        self.statusBar().showMessage(f"Scan complete: {len(tracks)} audio files found.")
+        self.statusBar().showMessage(f"Scan complete: {len(items)} audio files found.")
+
+        duplicates = [item for item in items if item.status == Status.DUPLICATE]
+        if duplicates:
+            DuplicateReviewDialog(duplicates, parent=self).exec()
 
     def _on_scan_failed(self, message: str):
         QMessageBox.critical(self, "Scan Failed", f"Could not complete the scan:\n{message}")

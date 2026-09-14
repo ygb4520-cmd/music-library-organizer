@@ -115,6 +115,30 @@ obscure/independent releases may not be in MusicBrainz's or AcoustID's
 databases at all. That correctly comes back as "no match" rather than a
 wrong guess.
 
+## Duplicate detection
+
+Every scan checks for duplicates using three methods, in priority order —
+the first one that groups a file with another wins:
+
+1. **Audio fingerprint match** — identifies each track's actual audio
+   content via the same AcoustID/fingerprinting integration as the metadata
+   lookup above, so a re-encoded copy or a differently-tagged rip of the
+   same song is still caught even if its filename and tags look nothing
+   alike. Only runs when an AcoustID API key is set in Settings (see
+   above) — leave it blank and this tier is skipped entirely, same as the
+   metadata-lookup fallback. Slower, since it reads and fingerprints every
+   file, which is the tradeoff for catching duplicates the other two
+   methods miss.
+2. **Tag match** — same artist + title (from tags).
+3. **Filename match** — same filename, ignoring a leading track number and
+   punctuation/case differences.
+
+A popup lists every duplicate group found and which method caught it right
+after the scan finishes. Duplicates are unchecked in the move list by
+default (never auto-deleted or auto-resolved) — review the popup, then
+recheck any file in the main list yourself if it isn't actually a
+duplicate.
+
 ## Editing tags manually
 
 **Tools → Edit Tags...** (select a file in the list first) opens a plain
@@ -131,8 +155,9 @@ explicit-Save-required rule as everywhere else that touches tags.
 - **Multi-artist default** — keep the full artist credit, or default to
   main-artist-only (per-row override always available in the lookup table).
 - **AcoustID API key** — free at [acoustid.org/api-key](https://acoustid.org/api-key).
-  Only used for the fingerprinting fallback; leave blank to rely on
-  filename search alone.
+  Used for the metadata-lookup fingerprinting fallback and the
+  fingerprint-based duplicate-detection tier; leave blank to skip both and
+  rely on filename search / tag+filename duplicate matching alone.
 
 ## Support / Feedback
 
