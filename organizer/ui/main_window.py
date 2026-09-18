@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import updater
+from .. import settings, updater
 from ..__version__ import __version__
 from ..metadata_worker import MetadataLookupWorker
 from ..models import MetadataSource, Status
@@ -90,6 +90,9 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("&Tools")
         lookup_action = tools_menu.addAction("&Look Up Missing Metadata...")
         lookup_action.triggered.connect(self.lookup_missing_metadata)
+
+        lookup_all_action = tools_menu.addAction("Double-Check &All Metadata...")
+        lookup_all_action.triggered.connect(self.lookup_all_metadata)
 
         edit_tags_action = tools_menu.addAction("&Edit Tags...")
         edit_tags_action.triggered.connect(self.edit_selected_tags)
@@ -372,13 +375,50 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._start_metadata_lookup(
+            candidates,
+            dialog_title="Look Up Missing Metadata",
+            intro=f"{len(candidates)} file(s) have no tag data. Search MusicBrainz's free online "
+            "database for likely matches based on filename?",
+        )
+
+    def lookup_all_metadata(self):
+        if self._metadata_worker is not None and self._metadata_worker.isRunning():
+            return
+
+        items = self.preview.model.items()
+        if not items:
+            QMessageBox.information(
+                self, "No Files Scanned", "Scan a folder first, then double-check metadata."
+            )
+            return
+
+        candidates = [item.track for item in items]
+
+        self._start_metadata_lookup(
+            candidates,
+            dialog_title="Double-Check All Metadata",
+            intro=f"Re-check all {len(candidates)} scanned file(s) against MusicBrainz, including "
+            "files that already have tags -- useful for catching wrong or incomplete existing "
+            "metadata, not just filling in blanks.",
+        )
+
+    def _start_metadata_lookup(self, candidates, dialog_title: str, intro: str):
+        fingerprint_note = (
+            "Files with no confident filename match will also be tried against AcoustID "
+            "audio fingerprinting (API key is set)."
+            if settings.get_acoustid_api_key()
+            else "No AcoustID API key is set in Settings, so files with no confident filename "
+            "match will be left unmatched rather than tried against audio fingerprinting."
+        )
         reply = QMessageBox.question(
             self,
-            "Look Up Missing Metadata",
-            f"{len(candidates)} file(s) have no tag data. Search MusicBrainz's free online "
-            "database for likely matches based on filename?\n\n"
+            dialog_title,
+            f"{intro}\n\n"
+            f"{fingerprint_note}\n\n"
             "This only looks things up — nothing is written to any file until you review and "
-            "confirm matches in the next screen.",
+            "confirm matches in the next screen. Lookup runs in the background — you can keep "
+            "using the app while it works.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -386,7 +426,7 @@ class MainWindow(QMainWindow):
             return
 
         self._metadata_progress = make_progress_dialog(
-            self, "Looking up metadata online...", on_cancel=self._cancel_metadata_lookup
+            self, "Looking up metadata online...", on_cancel=self._cancel_metadata_lookup, modal=False
         )
         self._metadata_worker = MetadataLookupWorker(candidates)
         self._metadata_worker.progress.connect(self._on_metadata_progress)

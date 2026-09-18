@@ -172,13 +172,27 @@ def fingerprint_match(path: Path, api_key: str, timeout: float = 30.0) -> Option
     )
 
 
-def best_match(path: Path, timeout: float = 10.0) -> Optional[MatchCandidate]:
-    """Guess a query from the filename and search MusicBrainz first; if that
-    finds nothing confident and an AcoustID key is configured, fall back to
-    audio fingerprinting. Returns the best candidate found by either
-    strategy (regardless of confidence -- callers decide what to do with a
-    low-confidence match, typically via MatchCandidate.is_confident)."""
-    guessed = guess_query(path)
+def best_match(
+    path: Path,
+    timeout: float = 10.0,
+    known_artist: Optional[str] = None,
+    known_title: Optional[str] = None,
+) -> Optional[MatchCandidate]:
+    """Search MusicBrainz first; if that finds nothing confident and an
+    AcoustID key is configured, fall back to audio fingerprinting. Returns
+    the best candidate found by either strategy (regardless of confidence --
+    callers decide what to do with a low-confidence match, typically via
+    MatchCandidate.is_confident).
+
+    If the file already has a title tag (known_title), that's used as the
+    search query -- when double-checking metadata that's already present,
+    verifying against the *actual* existing tags is the point, and a
+    filename guess can easily be worse than the tag itself. Falls back to
+    guessing from the filename when there's no existing tag to go on."""
+    if known_title:
+        guessed = (known_artist or "", known_title)
+    else:
+        guessed = guess_query(path)
     filename_match = None
     if guessed is not None:
         artist, title = guessed

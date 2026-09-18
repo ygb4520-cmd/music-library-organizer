@@ -5,9 +5,9 @@ from PySide6.QtWidgets import QProgressDialog
 from PySide6.QtCore import Qt
 
 
-def make_progress_dialog(parent, label: str, on_cancel=None) -> QProgressDialog:
+def make_progress_dialog(parent, label: str, on_cancel=None, modal: bool = True) -> QProgressDialog:
     dialog = QProgressDialog(label, "Cancel", 0, 100, parent)
-    dialog.setWindowModality(Qt.WindowModal)
+    dialog.setWindowModality(Qt.WindowModal if modal else Qt.NonModal)
     dialog.setMinimumDuration(0)
     dialog.setAutoClose(True)
     dialog.setAutoReset(True)

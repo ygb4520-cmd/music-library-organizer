@@ -39,7 +39,9 @@ class MetadataLookupWorker(QThread):
                 if self._cancelled:
                     return
 
-                match = metadata_lookup.best_match(track.path)
+                match = metadata_lookup.best_match(
+                    track.path, known_artist=track.artist, known_title=track.title
+                )
                 results.append((track, match))
 
                 self.progress.emit(i + 1, total)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -71,6 +72,13 @@ class MetadataPreviewDialog(QDialog):
 
         default_main_only = settings.get_multi_artist_mode() == settings.MULTI_ARTIST_MAIN_ONLY
 
+        # Bare QTableWidgetItems don't reliably inherit the table's text
+        # color on every platform/style (seen on Windows: header text draws
+        # fine but every data cell renders blank -- text color ends up
+        # matching the cell background). Setting it explicitly on each item
+        # avoids depending on that inheritance.
+        text_color = self.table.palette().color(QPalette.Active, QPalette.Text)
+
         for row, (track, match) in enumerate(self._rows):
             include_item = QTableWidgetItem()
             include_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -79,25 +87,37 @@ class MetadataPreviewDialog(QDialog):
 
             file_item = QTableWidgetItem(track.filename)
             file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
+            file_item.setForeground(text_color)
             self.table.setItem(row, COL_FILE, file_item)
 
             current = track.artist or track.title or "(none)"
             current_item = QTableWidgetItem(current)
             current_item.setFlags(current_item.flags() & ~Qt.ItemIsEditable)
+            current_item.setForeground(text_color)
             self.table.setItem(row, COL_CURRENT, current_item)
 
             # Editable fields -- pre-filled from the match, but the user can
             # correct anything before writing.
-            self.table.setItem(row, COL_ARTIST, QTableWidgetItem(match.artist))
-            self.table.setItem(row, COL_TITLE, QTableWidgetItem(match.title))
-            self.table.setItem(row, COL_ALBUM, QTableWidgetItem(match.album or ""))
+            artist_item = QTableWidgetItem(match.artist)
+            artist_item.setForeground(text_color)
+            self.table.setItem(row, COL_ARTIST, artist_item)
+
+            title_item = QTableWidgetItem(match.title)
+            title_item.setForeground(text_color)
+            self.table.setItem(row, COL_TITLE, title_item)
+
+            album_item = QTableWidgetItem(match.album or "")
+            album_item.setForeground(text_color)
+            self.table.setItem(row, COL_ALBUM, album_item)
 
             source_item = QTableWidgetItem(_SOURCE_LABELS.get(match.source, match.source))
             source_item.setFlags(source_item.flags() & ~Qt.ItemIsEditable)
+            source_item.setForeground(text_color)
             self.table.setItem(row, COL_SOURCE, source_item)
 
             has_feat = artist_utils.has_featured_artist(match.artist)
             main_only_item = QTableWidgetItem()
+            main_only_item.setForeground(text_color)
             if has_feat:
                 main_only_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 main_only_item.setCheckState(Qt.Checked if default_main_only else Qt.Unchecked)
@@ -110,8 +130,7 @@ class MetadataPreviewDialog(QDialog):
             confidence_item = QTableWidgetItem()
             confidence_item.setData(Qt.DisplayRole, match.score)  # numeric sort, not string sort
             confidence_item.setFlags(confidence_item.flags() & ~Qt.ItemIsEditable)
-            if not match.is_confident:
-                confidence_item.setForeground(Qt.darkYellow)
+            confidence_item.setForeground(Qt.darkYellow if not match.is_confident else text_color)
             self.table.setItem(row, COL_CONFIDENCE, confidence_item)
 
         layout.addWidget(self.table, 1)
