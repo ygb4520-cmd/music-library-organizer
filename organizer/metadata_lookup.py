@@ -19,8 +19,10 @@ modifying tags.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +33,36 @@ from typing import Optional
 import acoustid
 
 from . import inference, settings
+
+
+def hide_helper_console_windows(acoustid_module=acoustid, platform: str = sys.platform) -> bool:
+    """On Windows, makes the audio-fingerprint helper (fpcalc.exe) start with no console window.
+
+    pyacoustid launches fpcalc.exe once per track with a plain subprocess.Popen, and a windowed app (no console of its
+    own) then gets a black console window flashed on screen for every file during duplicate detection and metadata
+    lookup. Windows only hides it if the process is started with CREATE_NO_WINDOW (and a hidden STARTUPINFO), so this
+    swaps in a Popen that adds them. Only the copy of `subprocess` that pyacoustid uses is replaced; the rest of the
+    app is untouched. Does nothing on other platforms. Returns True when the swap was made."""
+    if platform != "win32" or not hasattr(acoustid_module, "subprocess"):
+        return False
+    real_popen = subprocess.Popen
+
+    def hidden_popen(*args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        if "startupinfo" not in kwargs and hasattr(subprocess, "STARTUPINFO"):
+            info = subprocess.STARTUPINFO()
+            info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+            info.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+            kwargs["startupinfo"] = info
+        return real_popen(*args, **kwargs)
+
+    shim = types.SimpleNamespace(**{name: getattr(subprocess, name) for name in dir(subprocess) if not name.startswith("__")})
+    shim.Popen = hidden_popen
+    acoustid_module.subprocess = shim
+    return True
+
+
+hide_helper_console_windows()
 
 MUSICBRAINZ_SEARCH_URL = "https://musicbrainz.org/ws/2/recording/"
 # MusicBrainz's usage policy requires a descriptive User-Agent identifying
