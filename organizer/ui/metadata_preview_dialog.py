@@ -67,7 +67,10 @@ class MetadataPreviewDialog(QDialog):
         )
         self.table.horizontalHeader().setSectionResizeMode(COL_FILE, QHeaderView.Stretch)
         self.table.setColumnWidth(COL_INCLUDE, 30)
-        self.table.setSortingEnabled(True)
+        # Sorting stays OFF while the rows are filled in and is switched on at the end. With it on, Qt re-sorts the table
+        # every time the first cell of a row is set, so the rest of that row's cells land in other rows and most of the
+        # table ends up blank.
+        self.table.setSortingEnabled(False)
         self.table.verticalHeader().setVisible(False)
 
         default_main_only = settings.get_multi_artist_mode() == settings.MULTI_ARTIST_MAIN_ONLY
@@ -88,6 +91,7 @@ class MetadataPreviewDialog(QDialog):
             file_item = QTableWidgetItem(track.filename)
             file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
             file_item.setForeground(text_color)
+            file_item.setData(Qt.UserRole, row)   # index into self._rows, so a re-sorted table still maps to the right file
             self.table.setItem(row, COL_FILE, file_item)
 
             current = track.artist or track.title or "(none)"
@@ -133,6 +137,10 @@ class MetadataPreviewDialog(QDialog):
             confidence_item.setForeground(Qt.darkYellow if not match.is_confident else text_color)
             self.table.setItem(row, COL_CONFIDENCE, confidence_item)
 
+        # Now that every cell is in place, allow click-to-sort. No column is sorted at first (the order from Settings stays).
+        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        self.table.setSortingEnabled(True)
+
         layout.addWidget(self.table, 1)
 
         note = QLabel(
@@ -165,9 +173,10 @@ class MetadataPreviewDialog(QDialog):
 
     def _write_selected(self):
         to_write = []  # (track, artist, title, album)
-        for row, (track, _match) in enumerate(self._rows):
+        for row in range(self.table.rowCount()):
             if self.table.item(row, COL_INCLUDE).checkState() != Qt.Checked:
                 continue
+            track = self._rows[self.table.item(row, COL_FILE).data(Qt.UserRole)][0]
 
             artist = self.table.item(row, COL_ARTIST).text().strip()
             title = self.table.item(row, COL_TITLE).text().strip()
