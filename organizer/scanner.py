@@ -21,6 +21,7 @@ from .models import TrackInfo
 
 class ScanWorker(QThread):
     progress = Signal(int, int)  # (files_processed, total_files)
+    plan_progress = Signal(int, int)  # (files_fingerprinted, total) during duplicate detection
     finished_scan = Signal(list)  # List[PlanItem]
     failed = Signal(str)
 
@@ -57,7 +58,8 @@ class ScanWorker(QThread):
             if self._cancelled:
                 return
             items = planner.build_plan(
-                tracks, self.source_root, self.destination_root, is_cancelled=lambda: self._cancelled
+                tracks, self.source_root, self.destination_root, is_cancelled=lambda: self._cancelled,
+                on_progress=self.plan_progress.emit,
             )
             if self._cancelled:
                 return

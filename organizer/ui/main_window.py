@@ -265,8 +265,14 @@ class MainWindow(QMainWindow):
         self._scan_progress = make_progress_dialog(
             self, "Scanning music library...", on_cancel=self._cancel_scan
         )
+        # Keep the dialog open until the whole scan (including the slow
+        # duplicate-detection pass) finishes; auto-close used to hide it as
+        # soon as tag reading hit 100%, leaving a silent, uncancellable scan.
+        self._scan_progress.setAutoClose(False)
+        self._scan_progress.setAutoReset(False)
         self._scan_worker = ScanWorker(self.source_root, self.destination_root)
         self._scan_worker.progress.connect(self._on_scan_progress)
+        self._scan_worker.plan_progress.connect(self._on_scan_plan_progress)
         self._scan_worker.finished_scan.connect(self._on_scan_finished)
         self._scan_worker.failed.connect(self._on_scan_failed)
         self._scan_worker.start()
@@ -282,6 +288,13 @@ class MainWindow(QMainWindow):
         self._scan_progress.setValue(done)
         self._scan_progress.setLabelText(f"Reading tags... {done}/{total}")
 
+    def _on_scan_plan_progress(self, done: int, total: int):
+        if self._scan_progress is None:
+            return
+        self._scan_progress.setMaximum(max(total, 1))
+        self._scan_progress.setValue(done)
+        self._scan_progress.setLabelText(f"Checking for duplicates (audio fingerprint)... {done}/{total}")
+
     def _on_scan_finished(self, items):
         # The plan (including duplicate detection) is now built inside
         # ScanWorker itself, off the GUI thread -- see scanner.py's
@@ -291,6 +304,7 @@ class MainWindow(QMainWindow):
             self._scan_worker.wait()
         if self._scan_progress is not None:
             self._scan_progress.setValue(self._scan_progress.maximum())
+            self._scan_progress.close()
         self.preview.set_items(items)
         self.move_button.setEnabled(len(items) > 0)
         self.statusBar().showMessage(f"Scan complete: {len(items)} audio files found.")
@@ -300,6 +314,8 @@ class MainWindow(QMainWindow):
             DuplicateReviewDialog(duplicates, parent=self).exec()
 
     def _on_scan_failed(self, message: str):
+        if self._scan_progress is not None:
+            self._scan_progress.close()
         QMessageBox.critical(self, "Scan Failed", f"Could not complete the scan:\n{message}")
 
     # -- Move -----------------------------------------------------------

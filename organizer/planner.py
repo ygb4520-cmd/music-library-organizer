@@ -29,6 +29,7 @@ def build_plan(
     source_root: Path,
     destination_root: Path,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[PlanItem]:
     """`is_cancelled`, if given, is polled during the (potentially slow,
     network-bound) fingerprint duplicate-detection pass so a scan cancel
@@ -66,17 +67,21 @@ def build_plan(
         status = Status.READY if track.metadata_source == MetadataSource.TAG else Status.INFERRED
         items.append(PlanItem(track=track, dest_path=dest_path, status=status, include=True))
 
-    _flag_duplicates(items, is_cancelled)
+    _flag_duplicates(items, is_cancelled, on_progress)
     _flag_conflicts(items)
 
     return items
 
 
-def _flag_duplicates(items: List[PlanItem], is_cancelled: Optional[Callable[[], bool]] = None) -> None:
+def _flag_duplicates(
+    items: List[PlanItem],
+    is_cancelled: Optional[Callable[[], bool]] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> None:
     candidates = [item for item in items if item.status != Status.NEEDS_REVIEW]
 
     group_num = 0
-    group_num = _group_by_fingerprint(candidates, group_num, is_cancelled)
+    group_num = _group_by_fingerprint(candidates, group_num, is_cancelled, on_progress)
     remaining = [item for item in candidates if item.status != Status.DUPLICATE]
     group_num = _group_by_key(
         remaining,
@@ -136,7 +141,10 @@ def _group_by_key(
 
 
 def _group_by_fingerprint(
-    items: List[PlanItem], group_num: int, is_cancelled: Optional[Callable[[], bool]] = None
+    items: List[PlanItem],
+    group_num: int,
+    is_cancelled: Optional[Callable[[], bool]] = None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> int:
     """Highest-priority duplicate tier: identifies each track's actual audio
     content via the existing AcoustID/chromaprint integration (same
@@ -155,9 +163,12 @@ def _group_by_fingerprint(
         return group_num
 
     groups: Dict[str, List[PlanItem]] = {}
-    for item in items:
+    total = len(items)
+    for done, item in enumerate(items, start=1):
         if is_cancelled is not None and is_cancelled():
             break
+        if on_progress is not None:
+            on_progress(done, total)
         match = metadata_lookup.fingerprint_match(item.track.path, api_key)
         if match is None or not match.is_confident:
             continue
