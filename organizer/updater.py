@@ -99,19 +99,37 @@ class UpdateApplyWorker(QThread):
             pid = os.getpid()
 
             # Windows won't let a running process overwrite its own .exe
-            # file, so we spawn a detached helper that waits for this
-            # process to fully exit, swaps the files, relaunches the app,
-            # then deletes itself.
+            # file, so we spawn a hidden helper that waits until the old exe
+            # can actually be replaced, swaps the files, relaunches the app,
+            # then deletes itself. A PyInstaller one-file exe runs as TWO
+            # processes (a bootloader parent plus this one) and the parent
+            # keeps the file locked a moment after this PID exits, so we
+            # retry the move instead of trusting a single attempt.
             helper_path = tmp_dir / "apply_update.bat"
+            log_path = tmp_dir / "update.log"
             helper_path.write_text(
                 "@echo off\r\n"
+                f'echo Update started > "{log_path}"\r\n'
+                f'set "PID={pid}"\r\n'
+                "set TRIES=0\r\n"
                 ":wait\r\n"
-                f'tasklist /fi "PID eq {pid}" | find "{pid}" >nul\r\n'
+                'tasklist /fi "PID eq %PID%" | find "%PID%" >nul\r\n'
                 "if not errorlevel 1 (\r\n"
                 "  timeout /t 1 /nobreak >nul\r\n"
                 "  goto wait\r\n"
                 ")\r\n"
-                f'move /y "{new_exe}" "{current_exe}"\r\n'
+                ":swap\r\n"
+                f'move /y "{new_exe}" "{current_exe}" >> "{log_path}" 2>&1\r\n'
+                "if not errorlevel 1 goto done\r\n"
+                "set /a TRIES+=1\r\n"
+                "if %TRIES% geq 60 goto done\r\n"
+                "timeout /t 1 /nobreak >nul\r\n"
+                "goto swap\r\n"
+                ":done\r\n"
+                # Stop the relaunched app from reusing the old process's
+                # extracted temp folder (which is gone by now).
+                "set PYINSTALLER_RESET_ENVIRONMENT=1\r\n"
+                "set _MEIPASS2=\r\n"
                 f'start "" "{current_exe}"\r\n'
                 'del "%~f0"\r\n'
             )
@@ -119,10 +137,15 @@ class UpdateApplyWorker(QThread):
             self.progress_text.emit("Installing update…")
             DETACHED_PROCESS = 0x00000008
             CREATE_NEW_PROCESS_GROUP = 0x00000200
+            CREATE_NO_WINDOW = 0x08000000
+            env = os.environ.copy()
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+            env.pop("_MEIPASS2", None)
             subprocess.Popen(
                 ["cmd", "/c", str(helper_path)],
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 close_fds=True,
+                env=env,
             )
         except Exception as e:
             self.failed.emit(str(e))
