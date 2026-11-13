@@ -61,6 +61,14 @@ class PreviewModel(QAbstractTableModel):
         self.endResetModel()
         self.summary_changed.emit()
 
+    def remove_items(self, to_remove) -> None:
+        """Drop the given PlanItems (e.g. files deleted from disk) from the list."""
+        ids = {id(i) for i in to_remove}
+        self.beginResetModel()
+        self._items = [i for i in self._items if id(i) not in ids]
+        self.endResetModel()
+        self.summary_changed.emit()
+
     def items(self) -> List[PlanItem]:
         return self._items
 

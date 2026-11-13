@@ -97,6 +97,9 @@ class MainWindow(QMainWindow):
         edit_tags_action = tools_menu.addAction("&Edit Tags...")
         edit_tags_action.triggered.connect(self.edit_selected_tags)
 
+        review_dups_action = tools_menu.addAction("Review &Duplicates...")
+        review_dups_action.triggered.connect(self.review_duplicates)
+
         tools_menu.addSeparator()
         settings_action = tools_menu.addAction("&Settings...")
         settings_action.triggered.connect(self.open_settings)
@@ -309,9 +312,22 @@ class MainWindow(QMainWindow):
         self.move_button.setEnabled(len(items) > 0)
         self.statusBar().showMessage(f"Scan complete: {len(items)} audio files found.")
 
-        duplicates = [item for item in items if item.status == Status.DUPLICATE]
-        if duplicates:
-            DuplicateReviewDialog(duplicates, parent=self).exec()
+        self.review_duplicates(only_if_found=True)
+
+    def review_duplicates(self, only_if_found: bool = False):
+        duplicates = [i for i in self.preview.model.items() if i.status == Status.DUPLICATE]
+        if not duplicates:
+            if not only_if_found:
+                QMessageBox.information(self, "No Duplicates", "No duplicates in the current scan.")
+            return
+        dialog = DuplicateReviewDialog(duplicates, parent=self)
+        dialog.exec()
+        if dialog.deleted_items:
+            self.preview.remove_items(dialog.deleted_items)
+            self.move_button.setEnabled(len(self.preview.model.items()) > 0)
+            self.statusBar().showMessage(f"Deleted {len(dialog.deleted_items)} duplicate file(s).")
+            # Rescan so remaining duplicate groups/statuses are recomputed.
+            self.start_scan()
 
     def _on_scan_failed(self, message: str):
         if self._scan_progress is not None:
