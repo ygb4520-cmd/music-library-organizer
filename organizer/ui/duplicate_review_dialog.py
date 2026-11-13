@@ -39,11 +39,33 @@ _METHOD_LABELS = {
 _METHOD_ORDER = {"fingerprint": 0, "tag": 1, "filename": 2}
 
 
+def _describe(item: PlanItem) -> str:
+    """Human-readable 'Artist - Title' for a file, falling back to the file name."""
+    track = item.track
+    title = track.title or track.path.stem
+    artist = track.artist or track.album_artist
+    return f"{artist} - {title}" if artist else title
+
+
+def _details(item: PlanItem) -> str:
+    track = item.track
+    parts = []
+    if track.album:
+        parts.append(f"Album: {track.album}")
+    if track.ext:
+        parts.append(track.ext.lstrip(".").upper())
+    if track.bitrate:
+        parts.append(f"{int(track.bitrate)} kbps")
+    if track.size:
+        parts.append(f"{track.size / (1024 * 1024):.1f} MB")
+    return " | ".join(parts)
+
+
 class DuplicateReviewDialog(QDialog):
     def __init__(self, duplicate_items: List[PlanItem], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Possible Duplicates Found")
-        self.resize(700, 450)
+        self.resize(1000, 500)
 
         groups: Dict[str, List[PlanItem]] = defaultdict(list)
         for item in duplicate_items:
@@ -65,17 +87,29 @@ class DuplicateReviewDialog(QDialog):
         layout.addWidget(summary)
 
         tree = QTreeWidget()
-        tree.setHeaderLabels(["Group / File", "Detected via"])
-        tree.header().setStretchLastSection(False)
+        tree.setHeaderLabels(["Song (artist - title)", "Details", "Detected via", "Full path"])
+        tree.header().setStretchLastSection(True)
+        tree.header().resizeSection(0, 280)
         tree.header().resizeSection(1, 220)
+        tree.header().resizeSection(2, 180)
 
         for group_id, group_items in ordered_groups:
             method = group_items[0].dup_method
             method_label = _METHOD_LABELS.get(method, method or "unknown")
-            group_node = QTreeWidgetItem([f"Group {group_id} ({len(group_items)} files)", method_label])
+            group_node = QTreeWidgetItem(
+                [f"{_describe(group_items[0])}  ({len(group_items)} copies)", "", method_label, ""]
+            )
             group_node.setFirstColumnSpanned(False)
             for item in group_items:
-                QTreeWidgetItem(group_node, [str(item.source_path), ""])
+                QTreeWidgetItem(
+                    group_node,
+                    [
+                        f"{_describe(item)}  [{item.track.path.name}]",
+                        _details(item),
+                        "",
+                        str(item.source_path),
+                    ],
+                )
             tree.addTopLevelItem(group_node)
             group_node.setExpanded(True)
 
