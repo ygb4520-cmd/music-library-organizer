@@ -96,7 +96,6 @@ class UpdateApplyWorker(QThread):
             urllib.request.urlretrieve(self.asset_url, new_exe)
 
             current_exe = Path(sys.executable)
-            pid = os.getpid()
 
             # Windows won't let a running process overwrite its own .exe
             # file, so we spawn a hidden helper that waits until the old exe
@@ -110,20 +109,18 @@ class UpdateApplyWorker(QThread):
             helper_path.write_text(
                 "@echo off\r\n"
                 f'echo Update started > "{log_path}"\r\n'
-                f'set "PID={pid}"\r\n'
                 "set TRIES=0\r\n"
-                ":wait\r\n"
-                'tasklist /fi "PID eq %PID%" | find "%PID%" >nul\r\n'
-                "if not errorlevel 1 (\r\n"
-                "  timeout /t 1 /nobreak >nul\r\n"
-                "  goto wait\r\n"
-                ")\r\n"
+                # Give the old process a moment to exit. No tasklist|find here:
+                # those spawned visible console windows (one titled "find <pid>"
+                # that never closed). The move below simply fails while the
+                # exe is still locked, and we retry it.
+                "ping -n 3 127.0.0.1 >nul\r\n"
                 ":swap\r\n"
                 f'move /y "{new_exe}" "{current_exe}" >> "{log_path}" 2>&1\r\n'
                 "if not errorlevel 1 goto done\r\n"
                 "set /a TRIES+=1\r\n"
                 "if %TRIES% geq 60 goto done\r\n"
-                "timeout /t 1 /nobreak >nul\r\n"
+                "ping -n 2 127.0.0.1 >nul\r\n"
                 "goto swap\r\n"
                 ":done\r\n"
                 # Stop the relaunched app from reusing the old process's
@@ -135,7 +132,9 @@ class UpdateApplyWorker(QThread):
             )
 
             self.progress_text.emit("Installing update…")
-            DETACHED_PROCESS = 0x00000008
+            # CREATE_NO_WINDOW alone gives cmd a hidden console that its child
+            # processes inherit. DETACHED_PROCESS would leave no console, so
+            # every child (ping, move...) would pop up its own visible one.
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             CREATE_NO_WINDOW = 0x08000000
             env = os.environ.copy()
@@ -143,7 +142,7 @@ class UpdateApplyWorker(QThread):
             env.pop("_MEIPASS2", None)
             subprocess.Popen(
                 ["cmd", "/c", str(helper_path)],
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 close_fds=True,
                 env=env,
             )
