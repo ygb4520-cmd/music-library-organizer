@@ -139,6 +139,15 @@ default (never auto-deleted or auto-resolved) — review the popup, then
 recheck any file in the main list yourself if it isn't actually a
 duplicate.
 
+In the duplicate popup you can **play the first 5 seconds** of any copy to
+compare them by ear, and press **Not a Duplicate** (on a group, or on two or
+more Ctrl-selected copies) to tell the app it was wrong — it remembers and
+won't flag those files together again. After deleting duplicates the app goes
+straight back to the overview without rescanning, and after editing tags only
+the changed files are re-read (new audio fingerprinting is skipped; duplicates
+are still checked by tag/filename and by remembered fingerprint results).
+**File → Rescan** does a full rescan.
+
 ## Editing tags manually
 
 **Tools → Edit Tags...** (select a file in the list first) opens a plain

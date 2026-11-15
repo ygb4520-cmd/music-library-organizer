@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from . import artist_utils, inference, metadata_lookup, settings
 from .models import MetadataSource, PlanItem, Status, TrackInfo
@@ -30,8 +30,17 @@ def build_plan(
     destination_root: Path,
     is_cancelled: Optional[Callable[[], bool]] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    fingerprint: bool = True,
+    fp_cache: Optional[dict] = None,
+    not_dupes: Optional[Set[frozenset]] = None,
 ) -> List[PlanItem]:
-    """`is_cancelled`, if given, is polled during the (potentially slow,
+    """`fingerprint=False` skips *new* audio fingerprinting (used for quick
+    re-checks after deleting duplicates / editing tags); results already
+    stored in `fp_cache` (keyed by path + mtime + size) are still used so
+    fingerprint-based duplicate groups are remembered. `not_dupes` is a set
+    of frozenset({path_a, path_b}) pairs the user marked as not duplicates.
+
+    `is_cancelled`, if given, is polled during the (potentially slow,
     network-bound) fingerprint duplicate-detection pass so a scan cancel
     takes effect promptly instead of only after every file's been
     fingerprinted -- the rest of this function is pure/fast enough not to
@@ -67,7 +76,7 @@ def build_plan(
         status = Status.READY if track.metadata_source == MetadataSource.TAG else Status.INFERRED
         items.append(PlanItem(track=track, dest_path=dest_path, status=status, include=True))
 
-    _flag_duplicates(items, is_cancelled, on_progress)
+    _flag_duplicates(items, is_cancelled, on_progress, fingerprint, fp_cache, not_dupes or set())
     _flag_conflicts(items)
 
     return items
@@ -77,11 +86,17 @@ def _flag_duplicates(
     items: List[PlanItem],
     is_cancelled: Optional[Callable[[], bool]] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    fingerprint: bool = True,
+    fp_cache: Optional[dict] = None,
+    not_dupes: Optional[Set[frozenset]] = None,
 ) -> None:
+    not_dupes = not_dupes or set()
     candidates = [item for item in items if item.status != Status.NEEDS_REVIEW]
 
     group_num = 0
-    group_num = _group_by_fingerprint(candidates, group_num, is_cancelled, on_progress)
+    group_num = _group_by_fingerprint(
+        candidates, group_num, is_cancelled, on_progress, fingerprint, fp_cache, not_dupes
+    )
     remaining = [item for item in candidates if item.status != Status.DUPLICATE]
     group_num = _group_by_key(
         remaining,
@@ -92,6 +107,7 @@ def _flag_duplicates(
         ),
         skip_fn=lambda item: not _normalize_key(item.track.title or item.track.path.stem),
         note="Possible duplicate of {n} other file(s) with the same title/artist.",
+        not_dupes=not_dupes,
     )
     remaining = [item for item in remaining if item.status != Status.DUPLICATE]
     _group_by_key(
@@ -101,6 +117,7 @@ def _flag_duplicates(
         key_fn=lambda item: _normalize_filename_key(item.track.path.stem),
         skip_fn=lambda item: not _normalize_filename_key(item.track.path.stem),
         note="Possible duplicate of {n} other file(s) with a matching filename.",
+        not_dupes=not_dupes,
     )
 
 
@@ -119,6 +136,7 @@ def _group_by_key(
     key_fn: Callable[[PlanItem], str],
     skip_fn: Callable[[PlanItem], bool],
     note: str,
+    not_dupes: Optional[Set[frozenset]] = None,
 ) -> int:
     groups: Dict[str, List[PlanItem]] = {}
     for item in items:
@@ -126,7 +144,7 @@ def _group_by_key(
             continue
         groups.setdefault(key_fn(item), []).append(item)
 
-    for group_items in groups.values():
+    for group_items in _split_by_not_dupes(groups.values(), not_dupes or set()):
         if len(group_items) < 2:
             continue
         group_num += 1
@@ -145,6 +163,9 @@ def _group_by_fingerprint(
     group_num: int,
     is_cancelled: Optional[Callable[[], bool]] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    fingerprint: bool = True,
+    fp_cache: Optional[dict] = None,
+    not_dupes: Optional[Set[frozenset]] = None,
 ) -> int:
     """Highest-priority duplicate tier: identifies each track's actual audio
     content via the existing AcoustID/chromaprint integration (same
@@ -167,15 +188,27 @@ def _group_by_fingerprint(
     for done, item in enumerate(items, start=1):
         if is_cancelled is not None and is_cancelled():
             break
-        if on_progress is not None:
-            on_progress(done, total)
-        match = metadata_lookup.fingerprint_match(item.track.path, api_key)
-        if match is None or not match.is_confident:
+        cache_key = _fp_cache_key(item.track.path)
+        if fp_cache is not None and cache_key in fp_cache:
+            key = fp_cache[cache_key]  # may be None (no confident match)
+        elif not fingerprint:
+            continue  # quick re-check: never fingerprint anything new
+        else:
+            if on_progress is not None:
+                on_progress(done, total)
+            match = metadata_lookup.fingerprint_match(item.track.path, api_key)
+            key = (
+                _normalize_key(f"{match.artist}|{match.title}")
+                if match is not None and match.is_confident
+                else None
+            )
+            if fp_cache is not None and cache_key is not None:
+                fp_cache[cache_key] = key
+        if key is None:
             continue
-        key = _normalize_key(f"{match.artist}|{match.title}")
         groups.setdefault(key, []).append(item)
 
-    for group_items in groups.values():
+    for group_items in _split_by_not_dupes(groups.values(), not_dupes or set()):
         if len(group_items) < 2:
             continue
         group_num += 1
@@ -190,6 +223,43 @@ def _group_by_fingerprint(
                 "identified as the same recording by audio fingerprint."
             )
     return group_num
+
+
+def _fp_cache_key(path: Path):
+    """(path, mtime_ns, size) so a changed file is fingerprinted again."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def _split_by_not_dupes(groups, not_dupes: Set[frozenset]):
+    """Split each candidate group into connected components, where two files
+    are linked unless the user marked that exact pair as 'not a duplicate'."""
+    if not not_dupes:
+        return [list(g) for g in groups]
+    result = []
+    for group in groups:
+        group = list(group)
+        parent = list(range(len(group)))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                pair = frozenset((str(group[i].track.path), str(group[j].track.path)))
+                if pair not in not_dupes:
+                    parent[find(i)] = find(j)
+        comps: Dict[int, List[PlanItem]] = {}
+        for i, it in enumerate(group):
+            comps.setdefault(find(i), []).append(it)
+        result.extend(comps.values())
+    return result
 
 
 def _flag_conflicts(items: List[PlanItem]) -> None:

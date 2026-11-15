@@ -29,7 +29,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .. import settings
 from ..models import PlanItem
+from .preview_player import SnippetPlayer
 
 _METHOD_LABELS = {
     "fingerprint": "Audio fingerprint match",
@@ -77,6 +79,10 @@ class DuplicateReviewDialog(QDialog):
         # Items actually deleted from disk from this dialog; the caller uses
         # this to drop them from the main list.
         self.deleted_items: List[PlanItem] = []
+        # True if the user told the app some files are NOT duplicates; the
+        # caller then recomputes the duplicate groups.
+        self.marked_not_duplicate = False
+        self._player = SnippetPlayer(self)
 
         groups: Dict[str, List[PlanItem]] = defaultdict(list)
         for item in duplicate_items:
@@ -101,6 +107,7 @@ class DuplicateReviewDialog(QDialog):
         tree = QTreeWidget()
         self._tree = tree
         self._item_for_node: Dict[int, PlanItem] = {}
+        tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         tree.setHeaderLabels(["Song (artist - title)", "Details", "Detected via", "Full path"])
         tree.header().setStretchLastSection(True)
         tree.header().resizeSection(0, 280)
@@ -140,6 +147,17 @@ class DuplicateReviewDialog(QDialog):
         tree.itemChanged.connect(lambda *_: self._update_status())
 
         button_row = QHBoxLayout()
+        play_btn = QPushButton("\u25b6 Play First 5 Sec")
+        play_btn.setToolTip("Select a file in the list, then play the first few seconds to compare copies.")
+        play_btn.clicked.connect(self._play_selected)
+        stop_btn = QPushButton("Stop")
+        stop_btn.clicked.connect(self._player.stop)
+        not_dup_btn = QPushButton("Not a Duplicate")
+        not_dup_btn.setToolTip(
+            "Select a group (or Ctrl-click two or more copies in a group) and tell the app "
+            "they are different songs. It will remember and stop flagging them."
+        )
+        not_dup_btn.clicked.connect(self._mark_not_duplicate)
         auto_btn = QPushButton("Auto-Check Extras (keep best quality)")
         auto_btn.setToolTip("In every group, check all copies except the highest bitrate / largest file.")
         auto_btn.clicked.connect(self._auto_check_extras)
@@ -150,6 +168,9 @@ class DuplicateReviewDialog(QDialog):
         ok_btn = QPushButton("Close")
         ok_btn.clicked.connect(self.accept)
         ok_btn.setDefault(True)
+        button_row.addWidget(play_btn)
+        button_row.addWidget(stop_btn)
+        button_row.addWidget(not_dup_btn)
         button_row.addWidget(auto_btn)
         button_row.addWidget(clear_btn)
         button_row.addStretch(1)
@@ -176,6 +197,40 @@ class DuplicateReviewDialog(QDialog):
             best = max(live, key=_quality_key)
             for it in live:
                 by_item[id(it)].setCheckState(0, Qt.Unchecked if it is best else Qt.Checked)
+
+    def _play_selected(self) -> None:
+        for node in self._tree.selectedItems():
+            item = self._item_for_node.get(id(node))
+            if item is not None:
+                if not self._player.play(item.source_path):
+                    QMessageBox.warning(self, "Playback Unavailable", f"Audio playback isn't available: {self._player.error}")
+                return
+        QMessageBox.information(self, "Select a File", "Select one of the copies (not the group heading) to play.")
+
+    def _mark_not_duplicate(self) -> None:
+        selected = self._tree.selectedItems()
+        children = [n for n in selected if id(n) in self._item_for_node]
+        group_nodes = [n for n in selected if id(n) not in self._item_for_node]
+        paths = []
+        if len(children) >= 2:
+            paths = [self._item_for_node[id(n)].source_path for n in children]
+        else:
+            node = group_nodes[0] if group_nodes else (children[0].parent() if children else None)
+            if node is not None:
+                paths = [
+                    self._item_for_node[id(node.child(i))].source_path
+                    for i in range(node.childCount())
+                    if id(node.child(i)) in self._item_for_node
+                ]
+        if len(paths) < 2:
+            QMessageBox.information(
+                self, "Select Copies", "Select a group, or two or more copies in a group, to mark as different songs."
+            )
+            return
+        settings.add_not_duplicate_pairs(paths)
+        self.marked_not_duplicate = True
+        self._player.stop()
+        self.accept()  # caller recomputes groups and reopens this review
 
     def _update_status(self) -> None:
         n = len(self._checked_nodes())

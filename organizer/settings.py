@@ -7,6 +7,9 @@ storage is appropriate (unlike, say, the Gemini API key in a sibling app,
 which is stored in the OS keychain because it's a real per-user secret)."""
 from __future__ import annotations
 
+import json
+from typing import Iterable, Set
+
 from PySide6.QtCore import QSettings
 
 ORG = "ybrownstein"
@@ -59,3 +62,30 @@ def get_acoustid_api_key() -> str:
 
 def set_acoustid_api_key(value: str) -> None:
     _settings().setValue("acoustid_api_key", value)
+
+
+# -- "Not a duplicate" memory ---------------------------------------------
+# Pairs of file paths the user has told the app are NOT duplicates of each
+# other. Stored as a JSON list of [path_a, path_b] pairs.
+
+def _pair(a, b) -> frozenset:
+    return frozenset((str(a), str(b)))
+
+
+def get_not_duplicate_pairs() -> Set[frozenset]:
+    raw = _settings().value("not_duplicate_pairs", "") or ""
+    try:
+        data = json.loads(raw) if raw else []
+        return {frozenset(p) for p in data if isinstance(p, list) and len(p) == 2}
+    except (ValueError, TypeError):
+        return set()
+
+
+def add_not_duplicate_pairs(paths: Iterable) -> None:
+    """Mark every pair among `paths` as 'not duplicates of each other'."""
+    paths = [str(p) for p in paths]
+    pairs = get_not_duplicate_pairs()
+    for i in range(len(paths)):
+        for j in range(i + 1, len(paths)):
+            pairs.add(_pair(paths[i], paths[j]))
+    _settings().setValue("not_duplicate_pairs", json.dumps([sorted(p) for p in pairs]))

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from .. import settings, updater
 from ..__version__ import __version__
 from ..metadata_worker import MetadataLookupWorker
+from .. import planner
 from ..models import MetadataSource, Status
 from ..mover import MoveWorker
 from ..scanner import ScanWorker
@@ -47,6 +48,10 @@ class MainWindow(QMainWindow):
         self._update_apply_worker: updater.UpdateApplyWorker | None = None
         self._metadata_worker: MetadataLookupWorker | None = None
         self._metadata_progress = None
+        # Remembered between scans: tag data per file (re-read only when the
+        # file's mtime/size changed) and audio-fingerprint duplicate results.
+        self._track_cache: dict = {}
+        self._fp_cache: dict = {}
 
         self._build_menu()
         self._build_central_widget()
@@ -81,7 +86,7 @@ class MainWindow(QMainWindow):
         dest_action.triggered.connect(self.select_destination_folder)
 
         rescan_action = file_menu.addAction("&Rescan")
-        rescan_action.triggered.connect(self.start_scan)
+        rescan_action.triggered.connect(lambda: self.start_scan(full=True))
 
         file_menu.addSeparator()
         exit_action = file_menu.addAction("E&xit")
@@ -261,9 +266,16 @@ class MainWindow(QMainWindow):
 
     # -- Scan ---------------------------------------------------------------
 
-    def start_scan(self):
+    def start_scan(self, full: bool = True):
+        """full=True: re-reads every file's tags and fingerprints anything not
+        already remembered. full=False (quick re-check after tag edits):
+        re-reads only files that changed since the last scan and never runs
+        new audio fingerprinting -- duplicates are still checked by tag and
+        filename, plus remembered fingerprint results for unchanged files."""
         if self.source_root is None:
             return
+        if full:
+            self._track_cache.clear()
         self.move_button.setEnabled(False)
         self._scan_progress = make_progress_dialog(
             self, "Scanning music library...", on_cancel=self._cancel_scan
@@ -273,7 +285,13 @@ class MainWindow(QMainWindow):
         # soon as tag reading hit 100%, leaving a silent, uncancellable scan.
         self._scan_progress.setAutoClose(False)
         self._scan_progress.setAutoReset(False)
-        self._scan_worker = ScanWorker(self.source_root, self.destination_root)
+        self._scan_worker = ScanWorker(
+            self.source_root,
+            self.destination_root,
+            track_cache=self._track_cache,
+            fp_cache=self._fp_cache,
+            fingerprint=full,
+        )
         self._scan_worker.progress.connect(self._on_scan_progress)
         self._scan_worker.plan_progress.connect(self._on_scan_plan_progress)
         self._scan_worker.finished_scan.connect(self._on_scan_finished)
@@ -322,12 +340,35 @@ class MainWindow(QMainWindow):
             return
         dialog = DuplicateReviewDialog(duplicates, parent=self)
         dialog.exec()
-        if dialog.deleted_items:
+        if dialog.deleted_items or dialog.marked_not_duplicate:
             self.preview.remove_items(dialog.deleted_items)
-            self.move_button.setEnabled(len(self.preview.model.items()) > 0)
-            self.statusBar().showMessage(f"Deleted {len(dialog.deleted_items)} duplicate file(s).")
-            # Rescan so remaining duplicate groups/statuses are recomputed.
-            self.start_scan()
+            for it in dialog.deleted_items:
+                self._track_cache.pop(str(it.source_path), None)
+            # No rescan: just recompute duplicate groups/statuses from the
+            # tracks we already have (no disk reads, no fingerprinting), then
+            # go straight to the overview.
+            self._recompute_plan()
+            if dialog.deleted_items:
+                self.statusBar().showMessage(f"Deleted {len(dialog.deleted_items)} duplicate file(s).")
+            if dialog.marked_not_duplicate:
+                self.review_duplicates(only_if_found=True)
+
+    def _recompute_plan(self):
+        old = self.preview.model.items()
+        include_before = {str(i.source_path): i.include for i in old}
+        items = planner.build_plan(
+            [i.track for i in old],
+            self.source_root,
+            self.destination_root,
+            fingerprint=False,
+            fp_cache=self._fp_cache,
+            not_dupes=settings.get_not_duplicate_pairs(),
+        )
+        for it in items:
+            if it.status in (Status.READY, Status.INFERRED):
+                it.include = include_before.get(str(it.source_path), it.include)
+        self.preview.set_items(items)
+        self.move_button.setEnabled(len(items) > 0)
 
     def _on_scan_failed(self, message: str):
         if self._scan_progress is not None:
@@ -385,7 +426,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Move complete: {len(result.moved)} moved, {len(result.failed)} failed."
         )
-        self.start_scan()
+        self.start_scan(full=True)
 
     # -- Metadata lookup --------------------------------------------------
 
@@ -485,7 +526,7 @@ class MainWindow(QMainWindow):
 
         dialog = MetadataPreviewDialog(results, parent=self)
         if dialog.exec():
-            self.start_scan()  # tags changed on disk -- rescan to reflect it
+            self.start_scan(full=False)  # only changed files are re-read
 
     def _on_metadata_failed(self, message: str):
         if self._metadata_progress is not None:
@@ -513,4 +554,4 @@ class MainWindow(QMainWindow):
 
         dialog = TagEditorDialog(item.track, parent=self)
         if dialog.exec():
-            self.start_scan()  # tags changed on disk -- rescan to reflect it
+            self.start_scan(full=False)  # only changed files are re-read

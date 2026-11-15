@@ -15,7 +15,7 @@ from typing import List
 
 from PySide6.QtCore import QThread, Signal
 
-from . import inference, planner, tag_reader
+from . import inference, planner, settings, tag_reader
 from .models import TrackInfo
 
 
@@ -25,8 +25,23 @@ class ScanWorker(QThread):
     finished_scan = Signal(list)  # List[PlanItem]
     failed = Signal(str)
 
-    def __init__(self, source_root: Path, destination_root: Path, parent=None):
+    def __init__(
+        self,
+        source_root: Path,
+        destination_root: Path,
+        parent=None,
+        track_cache: dict | None = None,
+        fp_cache: dict | None = None,
+        fingerprint: bool = True,
+    ):
+        """`track_cache` (path -> (mtime_ns, size, TrackInfo)) lets a rescan
+        re-read tags only for files that changed. `fp_cache` remembers
+        fingerprint results; `fingerprint=False` makes the scan never
+        fingerprint anything new (quick re-check)."""
         super().__init__(parent)
+        self.track_cache = track_cache if track_cache is not None else {}
+        self.fp_cache = fp_cache if fp_cache is not None else {}
+        self.fingerprint = fingerprint
         self.source_root = Path(source_root)
         self.destination_root = Path(destination_root)
         self._cancelled = False
@@ -50,8 +65,19 @@ class ScanWorker(QThread):
             for i, path in enumerate(paths, start=1):
                 if self._cancelled:
                     return
-                track = tag_reader.read_tags(path)
-                inference.apply_fallback(track, self.source_root)
+                try:
+                    st = path.stat()
+                    sig = (st.st_mtime_ns, st.st_size)
+                except OSError:
+                    sig = None
+                cached = self.track_cache.get(str(path))
+                if cached is not None and sig is not None and cached[:2] == sig:
+                    track = cached[2]
+                else:
+                    track = tag_reader.read_tags(path)
+                    inference.apply_fallback(track, self.source_root)
+                    if sig is not None:
+                        self.track_cache[str(path)] = (sig[0], sig[1], track)
                 tracks.append(track)
                 self.progress.emit(i, total)
 
@@ -60,6 +86,8 @@ class ScanWorker(QThread):
             items = planner.build_plan(
                 tracks, self.source_root, self.destination_root, is_cancelled=lambda: self._cancelled,
                 on_progress=self.plan_progress.emit,
+                fingerprint=self.fingerprint, fp_cache=self.fp_cache,
+                not_dupes=settings.get_not_duplicate_pairs(),
             )
             if self._cancelled:
                 return
