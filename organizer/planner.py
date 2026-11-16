@@ -235,30 +235,25 @@ def _fp_cache_key(path: Path):
 
 
 def _split_by_not_dupes(groups, not_dupes: Set[frozenset]):
-    """Split each candidate group into connected components, where two files
-    are linked unless the user marked that exact pair as 'not a duplicate'."""
+    """Split each candidate group into clusters where no two members were
+    marked as 'not a duplicate' of each other. Greedy: each file joins the
+    first cluster it has no 'not a duplicate' mark against, otherwise it
+    starts a new cluster. (Plain connected components would keep a whole group
+    together whenever a third file still links the pair the user separated.)"""
     if not not_dupes:
         return [list(g) for g in groups]
     result = []
     for group in groups:
-        group = list(group)
-        parent = list(range(len(group)))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                pair = frozenset((str(group[i].track.path), str(group[j].track.path)))
-                if pair not in not_dupes:
-                    parent[find(i)] = find(j)
-        comps: Dict[int, List[PlanItem]] = {}
-        for i, it in enumerate(group):
-            comps.setdefault(find(i), []).append(it)
-        result.extend(comps.values())
+        clusters: List[List[PlanItem]] = []
+        for it in group:
+            p = str(it.track.path)
+            for cluster in clusters:
+                if all(frozenset((p, str(o.track.path))) not in not_dupes for o in cluster):
+                    cluster.append(it)
+                    break
+            else:
+                clusters.append([it])
+        result.extend(clusters)
     return result
 
 

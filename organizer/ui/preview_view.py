@@ -102,6 +102,11 @@ class PreviewView(QWidget):
 
         select_all_ready_btn = QPushButton("Select All Ready/Inferred")
         select_all_ready_btn.clicked.connect(self._select_all_safe)
+        select_dupes_btn = QPushButton("Select Duplicates")
+        select_dupes_btn.setToolTip("Tick all duplicate rows so they are included in the move.")
+        select_dupes_btn.clicked.connect(
+            lambda: self.model.set_all_included(True, only_status=Status.DUPLICATE)
+        )
         deselect_all_btn = QPushButton("Deselect All")
         deselect_all_btn.clicked.connect(lambda: self.model.set_all_included(False))
 
@@ -110,6 +115,7 @@ class PreviewView(QWidget):
         top_row.addWidget(self.status_combo)
         top_row.addWidget(self.artist_combo)
         top_row.addWidget(select_all_ready_btn)
+        top_row.addWidget(select_dupes_btn)
         top_row.addWidget(deselect_all_btn)
 
         layout = QVBoxLayout(self)

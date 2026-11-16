@@ -355,7 +355,11 @@ class MainWindow(QMainWindow):
 
     def _recompute_plan(self):
         old = self.preview.model.items()
-        include_before = {str(i.source_path): i.include for i in old}
+        # Items that were duplicates had include=False only because of that
+        # flag; if they are no longer duplicates they should default to included.
+        include_before = {
+            str(i.source_path): i.include for i in old if i.status != Status.DUPLICATE
+        }
         items = planner.build_plan(
             [i.track for i in old],
             self.source_root,
