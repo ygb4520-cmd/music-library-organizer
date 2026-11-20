@@ -30,4 +30,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "dist/MusicLibraryOrganizer.exe" --title "${{ github.ref_name }}" --generate-notes
+        shell: bash
+        run: |
+          # The in-app updater refuses to install unless this checksum file sits next to the exe.
+          (cd dist && sha256sum MusicLibraryOrganizer.exe | cut -d' ' -f1 > MusicLibraryOrganizer.exe.sha256)
+          gh release create "${{ github.ref_name }}" dist/MusicLibraryOrganizer.exe dist/MusicLibraryOrganizer.exe.sha256 --title "${{ github.ref_name }}" --generate-notes

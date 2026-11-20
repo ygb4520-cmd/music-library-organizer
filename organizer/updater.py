@@ -7,6 +7,7 @@ development on macOS, so update checks are a no-op there.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -21,6 +22,29 @@ from .__version__ import __version__
 
 REPO = "ygb4520-cmd/music-library-organizer"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# Only ever install a file that comes from this repo's own release downloads.
+TRUSTED_DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
+
+
+def is_trusted_asset_url(url: str) -> bool:
+    return isinstance(url, str) and url.startswith(TRUSTED_DOWNLOAD_PREFIX)
+
+
+def parse_sha256_text(text: str):
+    """First 64-hex-digit token in a `sha256sum`-style file, lowercased, or None."""
+    for token in text.split():
+        t = token.strip().lower()
+        if len(t) == 64 and all(c in "0123456789abcdef" for c in t):
+            return t
+    return None
+
+
+def sha256_of_file(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def is_frozen() -> bool:
@@ -71,7 +95,7 @@ class UpdateCheckWorker(QThread):
         asset = next(
             (a for a in release.get("assets", []) if a["name"].endswith(".exe")), None
         )
-        if asset is None:
+        if asset is None or not is_trusted_asset_url(asset.get("browser_download_url", "")):
             self.no_update.emit()
             return
 
@@ -93,7 +117,22 @@ class UpdateApplyWorker(QThread):
             self.progress_text.emit("Downloading update…")
             tmp_dir = Path(tempfile.mkdtemp(prefix="mlo-update-"))
             new_exe = tmp_dir / "MusicLibraryOrganizer-new.exe"
+            if not is_trusted_asset_url(self.asset_url):
+                raise RuntimeError("Update download is not from the official release; refusing to install it.")
             urllib.request.urlretrieve(self.asset_url, new_exe)
+
+            # Integrity check: the release publishes <exe name>.sha256 next to
+            # the exe. No checksum, or a mismatch, means we do NOT install.
+            self.progress_text.emit("Verifying download…")
+            try:
+                with urllib.request.urlopen(self.asset_url + ".sha256", timeout=15) as resp:
+                    expected = parse_sha256_text(resp.read(4096).decode("utf-8", "replace"))
+            except Exception:
+                expected = None
+            if expected is None:
+                raise RuntimeError("This release has no checksum file, so the download can't be verified. Not installing.")
+            if sha256_of_file(new_exe) != expected:
+                raise RuntimeError("Downloaded update failed its checksum check (corrupt or tampered). Not installing.")
 
             current_exe = Path(sys.executable)
 

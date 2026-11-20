@@ -168,6 +168,19 @@ explicit-Save-required rule as everywhere else that touches tags.
   fingerprint-based duplicate-detection tier; leave blank to skip both and
   rely on filename search / tag+filename duplicate matching alone.
 
+## Safety notes
+
+- **Self-update is verified.** Each release publishes `MusicLibraryOrganizer.exe.sha256`
+  next to the exe. The updater only downloads from this repo's own release
+  URLs and refuses to install if the checksum is missing or doesn't match.
+- **Deleting duplicates is permanent** (it does not use the Recycle Bin — on
+  SD cards/removable drives Windows has no Recycle Bin anyway). The app
+  always refuses to delete every copy of a song, and asks first.
+- **The AcoustID API key** is saved in plain text in the app's settings
+  (Windows registry). It's a free, low-value key, but don't reuse a key you
+  care about.
+- Tests: run each file in `tests/` with `python3 tests/<name>.py`.
+
 ## Support / Feedback
 
 Found a bug or have a question? Open an issue: https://github.com/ygb4520-cmd/music-library-organizer/issues
