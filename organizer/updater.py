@@ -104,6 +104,8 @@ class UpdateCheckWorker(QThread):
 
 class UpdateApplyWorker(QThread):
     progress_text = Signal(str)
+    # (bytes downloaded, total bytes; total is 0 when the server doesn't say)
+    download_progress = Signal(int, int)
     failed = Signal(str)
     # No "succeeded" signal -- success means a helper process is about to
     # relaunch the app under a new PID, so the caller should just quit.
@@ -112,6 +114,24 @@ class UpdateApplyWorker(QThread):
         super().__init__(parent)
         self.asset_url = asset_url
 
+    def _download(self, url: str, dest: Path):
+        with urllib.request.urlopen(url, timeout=30) as resp, open(dest, "wb") as out:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            self.download_progress.emit(0, total)
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                self.download_progress.emit(done, total)
+                self.progress_text.emit(
+                    f"Downloading update… {done / 1048576:.1f}"
+                    + (f" / {total / 1048576:.1f}" if total else "")
+                    + " MB"
+                )
+
     def run(self):
         try:
             self.progress_text.emit("Downloading update…")
@@ -119,7 +139,7 @@ class UpdateApplyWorker(QThread):
             new_exe = tmp_dir / "MusicLibraryOrganizer-new.exe"
             if not is_trusted_asset_url(self.asset_url):
                 raise RuntimeError("Update download is not from the official release; refusing to install it.")
-            urllib.request.urlretrieve(self.asset_url, new_exe)
+            self._download(self.asset_url, new_exe)
 
             # Integrity check: the release publishes <exe name>.sha256 next to
             # the exe. No checksum, or a mismatch, means we do NOT install.

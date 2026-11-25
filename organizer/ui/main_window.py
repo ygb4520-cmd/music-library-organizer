@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -214,13 +215,36 @@ class MainWindow(QMainWindow):
         )
         self._update_apply_worker.failed.connect(self._on_update_failed)
         self._update_apply_worker.finished.connect(self._on_update_apply_finished)
+        self._update_progress_bar = QProgressBar()
+        self._update_progress_bar.setFixedWidth(220)
+        self._update_progress_bar.setRange(0, 0)  # busy until size is known
+        self.statusBar().addPermanentWidget(self._update_progress_bar)
+        self._update_apply_worker.download_progress.connect(self._on_update_download_progress)
         self._update_apply_worker.start()
+
+    def _on_update_download_progress(self, done: int, total: int):
+        bar = getattr(self, "_update_progress_bar", None)
+        if bar is None:
+            return
+        if total > 0:
+            bar.setRange(0, total)
+            bar.setValue(done)
+        else:
+            bar.setRange(0, 0)
+
+    def _remove_update_progress_bar(self):
+        bar = getattr(self, "_update_progress_bar", None)
+        if bar is not None:
+            self.statusBar().removeWidget(bar)
+            bar.deleteLater()
+            self._update_progress_bar = None
 
     def _on_update_apply_finished(self):
         # A successful run means a detached helper is waiting to relaunch
         # the app under a new process -- quit so it can take over. If it
         # failed, _on_update_failed already reported that and set the flag
         # below, so there's nothing to quit for.
+        self._remove_update_progress_bar()
         if not self._update_apply_had_error:
             QApplication.instance().quit()
 
