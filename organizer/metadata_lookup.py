@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 import types
 import urllib.error
@@ -71,6 +72,8 @@ MUSICBRAINZ_SEARCH_URL = "https://musicbrainz.org/ws/2/recording/"
 USER_AGENT = "MusicLibraryOrganizer/0.1 (personal-use desktop app)"
 # MusicBrainz asks for at most ~1 request/second for unauthenticated use.
 MIN_SECONDS_BETWEEN_REQUESTS = 1.1
+# AcoustID allows at most 3 requests/second per application.
+MIN_SECONDS_BETWEEN_ACOUSTID_REQUESTS = 0.35
 MIN_CONFIDENT_SCORE = 80  # 0-100 scale, shared by both strategies below
 
 # AcoustID's own match score is 0.0-1.0, not MusicBrainz's 0-100 -- it gets
@@ -89,6 +92,29 @@ class MatchCandidate:
     @property
     def is_confident(self) -> bool:
         return self.score >= MIN_CONFIDENT_SCORE
+
+
+class RateLimiter:
+    """Thread-safe pacing: wait() blocks until at least `interval` seconds have
+    passed since the previous caller was released. Lets many worker threads
+    share one server-side rate limit while doing everything else in parallel."""
+
+    def __init__(self, interval: float):
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next - now
+            self._next = max(now, self._next) + self.interval
+        if delay > 0:
+            time.sleep(delay)
+
+
+_musicbrainz_limiter = RateLimiter(MIN_SECONDS_BETWEEN_REQUESTS)
+_acoustid_limiter = RateLimiter(MIN_SECONDS_BETWEEN_ACOUSTID_REQUESTS)
 
 
 def guess_query(path: Path) -> Optional[tuple[str, str]]:
@@ -119,6 +145,7 @@ def search(artist: str, title: str, timeout: float = 10.0) -> list[MatchCandidat
     # "this song genuinely isn't in MusicBrainz", which is misleading.
     data = None
     for attempt in range(2):
+        _musicbrainz_limiter.wait()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = json.load(response)
@@ -177,7 +204,12 @@ def fingerprint_match(path: Path, api_key: str, timeout: float = 30.0) -> Option
 
     acoustid.FPCALC_COMMAND = fpcalc_path()
     try:
-        results = list(acoustid.match(api_key, str(path), timeout=timeout))
+        # Same steps as acoustid.match(), split so the slow local fpcalc run
+        # happens in parallel across threads and only the web request is paced.
+        duration, fp = acoustid.fingerprint_file(str(path))
+        _acoustid_limiter.wait()
+        response = acoustid.lookup(api_key, fp, duration, timeout=timeout)
+        results = list(acoustid.parse_lookup_result(response))
     except acoustid.NoBackendError:
         return None  # fpcalc missing/not executable -- fail closed, not crash
     except acoustid.FingerprintGenerationError:
@@ -209,6 +241,7 @@ def best_match(
     timeout: float = 10.0,
     known_artist: Optional[str] = None,
     known_title: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Optional[MatchCandidate]:
     """Search MusicBrainz first; if that finds nothing confident and an
     AcoustID key is configured, fall back to audio fingerprinting. Returns
@@ -234,7 +267,8 @@ def best_match(
     if filename_match is not None and filename_match.is_confident:
         return filename_match
 
-    api_key = settings.get_acoustid_api_key()
+    if api_key is None:
+        api_key = settings.get_acoustid_api_key()
     fingerprint_result = fingerprint_match(path, api_key) if api_key else None
 
     if fingerprint_result is not None:
