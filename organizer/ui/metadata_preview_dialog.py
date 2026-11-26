@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from .. import artist_utils, settings, tag_writer
 from ..metadata_lookup import MatchCandidate
 from ..models import TrackInfo
+from ..tag_write_worker import TagWriteWorker
 
 COL_INCLUDE = 0
 COL_FILE = 1
@@ -203,18 +205,25 @@ class MetadataPreviewDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        errors = []
-        written = 0
-        for track, artist, title, album in to_write:
-            try:
-                tag_writer.write_tags(track.path, artist=artist, title=title, album=album)
-                written += 1
-            except tag_writer.TagWriteError as e:
-                errors.append(f"{track.filename}: {e}")
+        progress = QProgressDialog("Writing tags...", "Cancel", 0, len(to_write), self)
+        progress.setWindowTitle("Writing Tags")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
 
-        summary_lines = [f"Wrote tags to {written} file(s)."]
-        if errors:
-            summary_lines.append(f"\n{len(errors)} failed:")
-            summary_lines.extend(f"  {e}" for e in errors[:20])
-        QMessageBox.information(self, "Tag Write Complete", "\n".join(summary_lines))
-        self.accept()
+        worker = TagWriteWorker(to_write, self)
+        self._write_worker = worker
+        worker.progress.connect(lambda done, total: progress.setValue(done))
+        progress.canceled.connect(worker.cancel)
+
+        def on_finished(written, errors):
+            progress.close()
+            summary_lines = [f"Wrote tags to {written} file(s)."]
+            if errors:
+                summary_lines.append(f"\n{len(errors)} failed:")
+                summary_lines.extend(f"  {e}" for e in errors[:20])
+            QMessageBox.information(self, "Tag Write Complete", "\n".join(summary_lines))
+            self.accept()
+
+        worker.finished_write.connect(on_finished)
+        worker.start()
