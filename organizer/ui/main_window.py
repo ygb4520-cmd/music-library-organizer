@@ -653,7 +653,8 @@ class MainWindow(QMainWindow):
         if self._metadata_progress is not None:
             self._metadata_progress.setValue(self._metadata_progress.maximum())
 
-        dialog = MetadataPreviewDialog(results, parent=self)
+        reasons = dict(getattr(self._metadata_worker, "reasons", {}) or {})
+        dialog = MetadataPreviewDialog(results, parent=self, reasons=reasons)
         if dialog.exec():
             self.start_scan(full=False)  # only changed files are re-read
 

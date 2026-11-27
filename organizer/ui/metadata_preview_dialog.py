@@ -5,7 +5,8 @@ mirrors the existing move-preview philosophy (nothing changes until you
 explicitly confirm)."""
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+import html
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import artist_utils, settings, tag_writer
-from ..metadata_lookup import MatchCandidate
+from ..metadata_lookup import LookupResult, LookupStatus, MatchCandidate
 from ..metadata_worker import AlternativesWorker
 from ..models import TrackInfo
 from ..tag_write_worker import TagWriteWorker
@@ -45,7 +46,12 @@ _SOURCE_LABELS = {"filename": "Filename", "fingerprint": "Fingerprint", "manual"
 
 
 class MetadataPreviewDialog(QDialog):
-    def __init__(self, results: List[Tuple[TrackInfo, Optional[MatchCandidate]]], parent=None):
+    def __init__(
+        self,
+        results: List[Tuple[TrackInfo, Optional[MatchCandidate]]],
+        parent=None,
+        reasons: Optional[Dict[object, LookupResult]] = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Metadata Lookup Results")
         self.resize(1000, 500)
@@ -67,6 +73,14 @@ class MetadataPreviewDialog(QDialog):
         )
         summary.setWordWrap(True)
         layout.addWidget(summary)
+
+        # Why files got no match (wrong key, fpcalc missing, network down...), so those don't all look like "not in the database".
+        reason_text, reason_tip = self._reason_summary(results, reasons or {})
+        self.reason_label = QLabel(reason_text)
+        self.reason_label.setWordWrap(True)
+        self.reason_label.setToolTip(reason_tip)
+        self.reason_label.setVisible(bool(reason_text))
+        layout.addWidget(self.reason_label)
 
         self.table = QTableWidget(len(self._rows), 9)
         self.table.setHorizontalHeaderLabels(
@@ -170,6 +184,28 @@ class MetadataPreviewDialog(QDialog):
         button_row.addWidget(cancel_btn)
         button_row.addWidget(write_btn)
         layout.addLayout(button_row)
+
+    @staticmethod
+    def _reason_summary(results, reasons: Dict[object, LookupResult]) -> Tuple[str, str]:
+        """(footer text, tooltip) describing why the unmatched files had no match. Empty when nothing is unmatched."""
+        groups: Dict[LookupStatus, List[Tuple[str, str]]] = {}
+        for track, match in results:
+            if match is not None:
+                continue
+            result = reasons.get(track.path)
+            status = result.status if result is not None else LookupStatus.NO_MATCH
+            groups.setdefault(status, []).append((track.filename, result.message if result else ""))
+        if not groups:
+            return "", ""
+        # Real problems first, plain "not in the database" last.
+        ordered = sorted(groups.items(), key=lambda kv: kv[0] is LookupStatus.NO_MATCH)
+        lines = []
+        tips = []
+        for status, files in ordered:
+            sample = files[0][1] or LookupResult([], status).message
+            lines.append(f"<b>{len(files)}</b> &times; {html.escape(sample)}")
+            tips.append(f"{status.name}:\n  " + "\n  ".join(name for name, _ in files[:15]) + ("\n  ..." if len(files) > 15 else ""))
+        return "Why files had no match:<br>" + "<br>".join(lines), "\n\n".join(tips)
 
     # -- Correcting a wrong match ------------------------------------------
 

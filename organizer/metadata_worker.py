@@ -5,7 +5,7 @@ ScanWorker/MoveWorker pattern."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QThread, Signal
 
@@ -27,6 +27,8 @@ class MetadataLookupWorker(QThread):
         self.tracks = tracks
         self.fingerprint_only = fingerprint_only
         self._cancelled = False
+        # Why a track got no match, keyed by path -- read by the preview dialog after the lookup finishes.
+        self.reasons: Dict[object, metadata_lookup.LookupResult] = {}
 
     def cancel(self):
         self._cancelled = True
@@ -42,12 +44,18 @@ class MetadataLookupWorker(QThread):
                     return i, None
                 t = self.tracks[i]
                 try:
-                    m = metadata_lookup.best_match(
+                    m, status = metadata_lookup.best_match_with_status(
                         t.path, known_artist=t.artist, known_title=t.title, api_key=api_key or "",
                         fingerprint_only=self.fingerprint_only,
                     )
-                except Exception:
+                    if m is None:
+                        self.reasons[t.path] = status
+                except Exception as exc:
+                    metadata_lookup.logger.exception("Metadata lookup crashed for %s", t.path)
                     m = None
+                    self.reasons[t.path] = metadata_lookup.LookupResult(
+                        [], metadata_lookup.LookupStatus.UNKNOWN_ERROR, str(exc)
+                    )
                 return i, m
 
             done = 0

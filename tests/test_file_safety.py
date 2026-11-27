@@ -90,6 +90,33 @@ f1, f2 = di("01 - Intro.mp3", 30.0, None, ""), di("Intro.mp3", 200.0, None, "")
 f1.track.title = f2.track.title = None
 flag([f1, f2]); check("filename tier: same name, different lengths not grouped", f1.status != Status.DUPLICATE)
 
+# ---- mover: a destination occupied by another pending item's source ----
+with tempfile.TemporaryDirectory() as d:
+    root = Path(d)
+    (root / "in").mkdir()
+    # chain: a -> b's spot, b -> c's spot, c -> free spot; listed in the "wrong" order on purpose
+    fa, fb, fc = root / "in" / "a.mp3", root / "in" / "b.mp3", root / "in" / "c.mp3"
+    for f, data in ((fa, b"A"), (fb, b"B"), (fc, b"C")): f.write_bytes(data)
+    free = root / "out" / "c.mp3"
+    chain = [item(fa, fb), item(fb, fc), item(fc, free)]
+    MoveWorker(chain, root).run()
+    check("chained moves all succeed", not any(i.move_error for i in chain) and fb.read_bytes() == b"A" and fc.read_bytes() == b"B" and free.read_bytes() == b"C")
+    # circular swap: nothing overwritten, both reported failed with a clear reason
+    sa, sb = root / "in" / "sa.mp3", root / "in" / "sb.mp3"
+    sa.write_bytes(b"SA"); sb.write_bytes(b"SB")
+    swap = [item(sa, sb), item(sb, sa)]
+    seen = []
+    w = MoveWorker(swap, root); w.finished_move.connect(seen.append); w.run()
+    check("swap: nothing overwritten", sa.read_bytes() == b"SA" and sb.read_bytes() == b"SB")
+    check("swap: both reported failed with a reason", len(seen[0].failed) == 2 and all("circular" in (i.move_error or "") for i in swap))
+    # a blocker that is itself unmovable (its own destination is taken by an unrelated file)
+    ba, bb, other = root / "in" / "ba.mp3", root / "in" / "bb.mp3", root / "out" / "other.mp3"
+    ba.write_bytes(b"BA"); bb.write_bytes(b"BB"); other.write_bytes(b"OTHER")
+    stuck = [item(ba, bb), item(bb, other)]
+    MoveWorker(stuck, root).run()
+    check("blocked chain: no file lost or overwritten", ba.read_bytes() == b"BA" and bb.read_bytes() == b"BB" and other.read_bytes() == b"OTHER")
+    check("blocked chain: both reported failed", all(i.move_error for i in stuck))
+
 # ---- planner: 'not a duplicate' splitting ----
 def pi(p): return item(p, "/dest/" + Path(p).name)
 x, y, z = pi("/m/1.mp3"), pi("/m/2.mp3"), pi("/m/3.mp3")
