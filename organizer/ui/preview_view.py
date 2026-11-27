@@ -3,13 +3,14 @@ bar, and bulk selection helpers. Row color (set on the model) is the main
 visual signal for clean vs inferred vs duplicate/conflict vs needs-review."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt
+from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTableView,
     QVBoxLayout,
@@ -55,6 +56,10 @@ def artist_of(item) -> str:
 
 
 class PreviewView(QWidget):
+    edit_tags_requested = Signal()
+    lookup_selected_requested = Signal()
+    fingerprint_selected_requested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -99,6 +104,8 @@ class PreviewView(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(COL_ALBUM, QHeaderView.ResizeToContents)
         self.table.setColumnWidth(COL_INCLUDE, 60)
         self.table.verticalHeader().setVisible(False)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
 
         select_all_ready_btn = QPushButton("Select All Ready/Inferred")
         select_all_ready_btn.clicked.connect(self._select_all_safe)
@@ -124,6 +131,35 @@ class PreviewView(QWidget):
         layout.addWidget(self.table, 1)
 
         self.model.summary_changed.connect(self._refresh_summary)
+
+    def selected_items(self):
+        """PlanItems for the currently selected rows."""
+        sel = self.table.selectionModel()
+        if sel is None:
+            return []
+        items = self.model.items()
+        return [items[self.proxy.mapToSource(i).row()] for i in sel.selectedRows()]
+
+    def _show_context_menu(self, pos):
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        sel = self.table.selectionModel()
+        if not sel.isRowSelected(index.row(), index.parent()):
+            self.table.selectRow(index.row())  # right-clicking an unselected row selects just that row
+        n = len(self.selected_items())
+        menu = QMenu(self)
+        edit = menu.addAction("Edit Tags...")
+        edit.setEnabled(n >= 1)
+        lookup = menu.addAction(f"Look Up Selected Online ({n})")
+        finger = menu.addAction(f"Identify Selected by Fingerprint ({n})")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen == edit:
+            self.edit_tags_requested.emit()
+        elif chosen == lookup:
+            self.lookup_selected_requested.emit()
+        elif chosen == finger:
+            self.fingerprint_selected_requested.emit()
 
     def _select_all_safe(self):
         self.model.set_all_included(True, only_status=Status.READY)

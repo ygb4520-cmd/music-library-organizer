@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QMenu,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -25,8 +26,10 @@ from PySide6.QtWidgets import (
 
 from .. import artist_utils, settings, tag_writer
 from ..metadata_lookup import MatchCandidate
+from ..metadata_worker import AlternativesWorker
 from ..models import TrackInfo
 from ..tag_write_worker import TagWriteWorker
+from .correction_dialog import CorrectionDialog
 
 COL_INCLUDE = 0
 COL_FILE = 1
@@ -38,7 +41,7 @@ COL_SOURCE = 6
 COL_MAIN_ONLY = 7
 COL_CONFIDENCE = 8
 
-_SOURCE_LABELS = {"filename": "Filename", "fingerprint": "Fingerprint"}
+_SOURCE_LABELS = {"filename": "Filename", "fingerprint": "Fingerprint", "manual": "Manual"}
 
 
 class MetadataPreviewDialog(QDialog):
@@ -51,6 +54,8 @@ class MetadataPreviewDialog(QDialog):
         no_match_count = len(results) - len(rows)
         rows = self._sorted(rows)
         self._rows: List[Tuple[TrackInfo, MatchCandidate]] = rows
+        self._rejected = {}  # row index -> set of (artist, title) the user marked as wrong
+        self._alt_worker = None
 
         layout = QVBoxLayout(self)
 
@@ -143,10 +148,14 @@ class MetadataPreviewDialog(QDialog):
         self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.table.setSortingEnabled(True)
 
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+
         layout.addWidget(self.table, 1)
 
         note = QLabel(
-            "Artist/Title/Album are editable — fix anything before writing. This writes tags "
+            "Artist/Title/Album are editable — fix anything before writing. Right-click a row and choose "
+            "\"Wrong match\" to try again or enter the tags yourself. This writes tags "
             "directly to the checked files, the only place in this app that modifies tags."
         )
         note.setWordWrap(True)
@@ -161,6 +170,88 @@ class MetadataPreviewDialog(QDialog):
         button_row.addWidget(cancel_btn)
         button_row.addWidget(write_btn)
         layout.addLayout(button_row)
+
+    # -- Correcting a wrong match ------------------------------------------
+
+    def _row_index_at(self, pos) -> Optional[int]:
+        item = self.table.itemAt(pos)
+        if item is None:
+            return None
+        return self.table.item(item.row(), COL_FILE).data(Qt.UserRole)
+
+    def _show_context_menu(self, pos):
+        idx = self._row_index_at(pos)
+        if idx is None or (self._alt_worker is not None and self._alt_worker.isRunning()):
+            return
+        menu = QMenu(self)
+        retry = menu.addAction("Wrong match — try again")
+        manual = menu.addAction("Wrong match — enter tags myself...")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen == retry:
+            self._mark_wrong(idx, search=True)
+        elif chosen == manual:
+            self._mark_wrong(idx, search=False)
+
+    def _table_row_for(self, idx: int) -> Optional[int]:
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, COL_FILE).data(Qt.UserRole) == idx:
+                return r
+        return None
+
+    def _mark_wrong(self, idx: int, search: bool):
+        row = self._table_row_for(idx)
+        if row is None:
+            return
+        track = self._rows[idx][0]
+        artist = self.table.item(row, COL_ARTIST).text().strip()
+        title = self.table.item(row, COL_TITLE).text().strip()
+        self._rejected.setdefault(idx, set()).add((artist, title))
+        # A wrong match shouldn't get written by accident.
+        self.table.item(row, COL_INCLUDE).setCheckState(Qt.Unchecked)
+        if not search:
+            self._show_correction(idx, [])
+            return
+        self.setCursor(Qt.BusyCursor)
+        worker = AlternativesWorker(track, self._rejected[idx], self)
+        self._alt_worker = worker
+
+        def done(found):
+            self.unsetCursor()
+            self._show_correction(idx, found)
+
+        worker.finished_lookup.connect(done)
+        worker.start()
+
+    def _show_correction(self, idx: int, candidates):
+        row = self._table_row_for(idx)
+        if row is None:
+            return
+        track = self._rows[idx][0]
+        dlg = CorrectionDialog(
+            track.filename,
+            candidates,
+            artist=self.table.item(row, COL_ARTIST).text(),
+            title=self.table.item(row, COL_TITLE).text(),
+            album=self.table.item(row, COL_ALBUM).text(),
+            parent=self,
+        )
+        if not dlg.exec():
+            return
+        tags = dlg.result_tags()
+        if tags is None:
+            QMessageBox.information(self, "Nothing Entered", "Artist and title are both required.")
+            return
+        artist, title, album, source = tags
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)  # otherwise the row can jump while its cells are being updated
+        row = self._table_row_for(idx)
+        self.table.item(row, COL_ARTIST).setText(artist)
+        self.table.item(row, COL_TITLE).setText(title)
+        self.table.item(row, COL_ALBUM).setText(album)
+        self.table.item(row, COL_SOURCE).setText(_SOURCE_LABELS.get(source, source))
+        self.table.item(row, COL_CONFIDENCE).setData(Qt.DisplayRole, 100 if source == "manual" else self.table.item(row, COL_CONFIDENCE).data(Qt.DisplayRole))
+        self.table.item(row, COL_INCLUDE).setCheckState(Qt.Checked)
+        self.table.setSortingEnabled(sorting)
 
     def _sorted(
         self, rows: List[Tuple[TrackInfo, MatchCandidate]]

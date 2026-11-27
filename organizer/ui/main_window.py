@@ -100,6 +100,12 @@ class MainWindow(QMainWindow):
         lookup_all_action = tools_menu.addAction("Double-Check &All Metadata...")
         lookup_all_action.triggered.connect(self.lookup_all_metadata)
 
+        finger_all_action = tools_menu.addAction("Identify All by &Fingerprint...")
+        finger_all_action.triggered.connect(self.fingerprint_all)
+
+        finger_sel_action = tools_menu.addAction("Identify Selected by Fin&gerprint...")
+        finger_sel_action.triggered.connect(self.fingerprint_selected)
+
         edit_tags_action = tools_menu.addAction("&Edit Tags...")
         edit_tags_action.triggered.connect(self.edit_selected_tags)
 
@@ -128,6 +134,9 @@ class MainWindow(QMainWindow):
         self.select_button.clicked.connect(self.select_source_folder)
 
         self.preview = PreviewView()
+        self.preview.edit_tags_requested.connect(self.edit_selected_tags)
+        self.preview.lookup_selected_requested.connect(self.lookup_selected_metadata)
+        self.preview.fingerprint_selected_requested.connect(self.fingerprint_selected)
 
         self.move_button = QPushButton("Move Selected Files...")
         self.move_button.setEnabled(False)
@@ -504,11 +513,54 @@ class MainWindow(QMainWindow):
             "metadata, not just filling in blanks.",
         )
 
-    def _start_metadata_lookup(self, candidates, dialog_title: str, intro: str):
+    def lookup_selected_metadata(self):
+        if self._metadata_worker is not None and self._metadata_worker.isRunning():
+            return
+        tracks = [i.track for i in self.preview.selected_items()]
+        if not tracks:
+            QMessageBox.information(self, "No File Selected", "Select one or more files first.")
+            return
+        self._start_metadata_lookup(
+            tracks, dialog_title="Look Up Selected",
+            intro=f"Look up {len(tracks)} selected file(s) online?",
+        )
+
+    def fingerprint_all(self):
+        tracks = [i.track for i in self.preview.model.items()]
+        if not tracks:
+            QMessageBox.information(self, "No Files Scanned", "Scan a folder first.")
+            return
+        self._fingerprint(tracks, "Identify All by Fingerprint")
+
+    def fingerprint_selected(self):
+        tracks = [i.track for i in self.preview.selected_items()]
+        if not tracks:
+            QMessageBox.information(self, "No File Selected", "Select one or more files first.")
+            return
+        self._fingerprint(tracks, "Identify Selected by Fingerprint")
+
+    def _fingerprint(self, tracks, title: str):
+        if self._metadata_worker is not None and self._metadata_worker.isRunning():
+            return
+        if not settings.get_acoustid_api_key():
+            QMessageBox.information(
+                self, "AcoustID Key Needed",
+                "Audio fingerprinting needs a free AcoustID API key. Add one in Tools > Settings first.",
+            )
+            return
+        self._start_metadata_lookup(
+            tracks, dialog_title=title,
+            intro=f"Identify {len(tracks)} file(s) from their actual audio, ignoring filenames and existing tags? "
+            "This is slower than a filename search.",
+            fingerprint_only=True,
+        )
+
+    def _start_metadata_lookup(self, candidates, dialog_title: str, intro: str, fingerprint_only: bool = False):
         fingerprint_note = (
             "Files with no confident filename match will also be tried against AcoustID "
             "audio fingerprinting (API key is set)."
-            if settings.get_acoustid_api_key()
+            if settings.get_acoustid_api_key() and not fingerprint_only
+            else "Only audio fingerprinting (AcoustID) is used for this lookup." if fingerprint_only
             else "No AcoustID API key is set in Settings, so files with no confident filename "
             "match will be left unmatched rather than tried against audio fingerprinting."
         )
@@ -529,7 +581,7 @@ class MainWindow(QMainWindow):
         self._metadata_progress = make_progress_dialog(
             self, "Looking up metadata online...", on_cancel=self._cancel_metadata_lookup, modal=False
         )
-        self._metadata_worker = MetadataLookupWorker(candidates)
+        self._metadata_worker = MetadataLookupWorker(candidates, fingerprint_only=fingerprint_only)
         self._metadata_worker.progress.connect(self._on_metadata_progress)
         self._metadata_worker.finished_lookup.connect(self._on_metadata_finished)
         self._metadata_worker.failed.connect(self._on_metadata_failed)

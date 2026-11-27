@@ -192,15 +192,11 @@ def fpcalc_path() -> str:
     return str(base / "bin" / "mac" / "fpcalc")
 
 
-def fingerprint_match(path: Path, api_key: str, timeout: float = 30.0) -> Optional[MatchCandidate]:
-    """Identifies a track from its actual audio content via AcoustID,
-    regardless of filename. Slower than the filename search (has to read
-    the audio to compute a fingerprint) -- meant as a fallback, not the
-    default path. Returns None on any failure (missing/invalid key, no
-    network, no confident match, fpcalc error) rather than raising, so
-    callers can treat it exactly like an unsuccessful filename search."""
+def fingerprint_candidates(path: Path, api_key: str, timeout: float = 30.0, limit: int = 5) -> list[MatchCandidate]:
+    """All AcoustID matches for a track's audio (best first, duplicates removed). Returns [] on any failure
+    (missing/invalid key, no network, fpcalc error) rather than raising."""
     if not api_key:
-        return None
+        return []
 
     acoustid.FPCALC_COMMAND = fpcalc_path()
     try:
@@ -210,30 +206,74 @@ def fingerprint_match(path: Path, api_key: str, timeout: float = 30.0) -> Option
         _acoustid_limiter.wait()
         response = acoustid.lookup(api_key, fp, duration, timeout=timeout)
         results = list(acoustid.parse_lookup_result(response))
-    except acoustid.NoBackendError:
-        return None  # fpcalc missing/not executable -- fail closed, not crash
-    except acoustid.FingerprintGenerationError:
-        return None  # unreadable/corrupt audio file
-    except acoustid.WebServiceError:
-        return None  # bad API key, AcoustID down, rate-limited, etc.
     except Exception:
-        return None
+        # NoBackendError (fpcalc missing), FingerprintGenerationError (corrupt audio), WebServiceError
+        # (bad key / AcoustID down / rate-limited), or anything else: fail closed, don't crash.
+        return []
 
-    if not results:
-        return None
+    candidates: list[MatchCandidate] = []
+    seen = set()
+    # parse_lookup_result already sorts by score descending.
+    for score, _recording_id, title, artist in results:
+        if not title or not artist:
+            continue
+        key = (artist.lower(), title.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            MatchCandidate(
+                score=round(score * 100),
+                artist=artist,
+                title=title,
+                album=None,  # AcoustID's basic recording lookup doesn't include release/album info
+                source="fingerprint",
+            )
+        )
+        if len(candidates) >= limit:
+            break
+    return candidates
 
-    # parse_lookup_result already sorts by score descending; take the best.
-    score, _recording_id, title, artist = results[0]
-    if not title or not artist:
-        return None
 
-    return MatchCandidate(
-        score=round(score * 100),
-        artist=artist,
-        title=title,
-        album=None,  # AcoustID's basic recording lookup doesn't include release/album info
-        source="fingerprint",
-    )
+def fingerprint_match(path: Path, api_key: str, timeout: float = 30.0) -> Optional[MatchCandidate]:
+    """Identifies a track from its actual audio content via AcoustID,
+    regardless of filename. Slower than the filename search (has to read
+    the audio to compute a fingerprint). Returns None on any failure so
+    callers can treat it exactly like an unsuccessful filename search."""
+    found = fingerprint_candidates(path, api_key, timeout=timeout, limit=1)
+    return found[0] if found else None
+
+
+def alternatives(
+    path: Path,
+    rejected=(),
+    known_artist: Optional[str] = None,
+    known_title: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: float = 10.0,
+) -> list[MatchCandidate]:
+    """Other possible matches for a track after the user marked a match as wrong. Gathers MusicBrainz filename
+    results plus AcoustID fingerprint results (when a key is set), and leaves out anything in `rejected`
+    (an iterable of (artist, title) pairs that the user already said were wrong). Best score first."""
+    bad = {(a.strip().lower(), t.strip().lower()) for a, t in rejected}
+    found: list[MatchCandidate] = []
+    guessed = (known_artist or "", known_title) if known_title else guess_query(path)
+    if guessed is not None:
+        found.extend(search(guessed[0], guessed[1], timeout=timeout))
+    if api_key is None:
+        api_key = settings.get_acoustid_api_key()
+    if api_key:
+        found.extend(fingerprint_candidates(path, api_key))
+
+    out: list[MatchCandidate] = []
+    seen = set()
+    for c in sorted(found, key=lambda c: c.score, reverse=True):
+        key = (c.artist.strip().lower(), c.title.strip().lower())
+        if key in bad or key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
 
 
 def best_match(
@@ -242,6 +282,7 @@ def best_match(
     known_artist: Optional[str] = None,
     known_title: Optional[str] = None,
     api_key: Optional[str] = None,
+    fingerprint_only: bool = False,
 ) -> Optional[MatchCandidate]:
     """Search MusicBrainz first; if that finds nothing confident and an
     AcoustID key is configured, fall back to audio fingerprinting. Returns
@@ -253,7 +294,14 @@ def best_match(
     search query -- when double-checking metadata that's already present,
     verifying against the *actual* existing tags is the point, and a
     filename guess can easily be worse than the tag itself. Falls back to
-    guessing from the filename when there's no existing tag to go on."""
+    guessing from the filename when there's no existing tag to go on.
+
+    With fingerprint_only=True the filename search is skipped entirely and only the audio fingerprint is used
+    (returns None when no AcoustID key is set)."""
+    if fingerprint_only:
+        if api_key is None:
+            api_key = settings.get_acoustid_api_key()
+        return fingerprint_match(path, api_key) if api_key else None
     if known_title:
         guessed = (known_artist or "", known_title)
     else:

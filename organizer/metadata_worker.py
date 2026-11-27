@@ -22,9 +22,10 @@ class MetadataLookupWorker(QThread):
     finished_lookup = Signal(list)  # List[Tuple[TrackInfo, Optional[MatchCandidate]]]
     failed = Signal(str)
 
-    def __init__(self, tracks: List[TrackInfo], parent=None):
+    def __init__(self, tracks: List[TrackInfo], parent=None, fingerprint_only: bool = False):
         super().__init__(parent)
         self.tracks = tracks
+        self.fingerprint_only = fingerprint_only
         self._cancelled = False
 
     def cancel(self):
@@ -42,7 +43,8 @@ class MetadataLookupWorker(QThread):
                 t = self.tracks[i]
                 try:
                     m = metadata_lookup.best_match(
-                        t.path, known_artist=t.artist, known_title=t.title, api_key=api_key or ""
+                        t.path, known_artist=t.artist, known_title=t.title, api_key=api_key or "",
+                        fingerprint_only=self.fingerprint_only,
                     )
                 except Exception:
                     m = None
@@ -64,3 +66,26 @@ class MetadataLookupWorker(QThread):
             self.finished_lookup.emit(results)
         except Exception as e:
             self.failed.emit(str(e))
+
+
+class AlternativesWorker(QThread):
+    """Looks up other candidate matches for one track after the user marked a match as wrong."""
+    finished_lookup = Signal(list)  # List[MatchCandidate]
+
+    def __init__(self, track: TrackInfo, rejected, parent=None):
+        super().__init__(parent)
+        self.track = track
+        self.rejected = list(rejected)
+
+    def run(self):
+        try:
+            found = metadata_lookup.alternatives(
+                self.track.path,
+                rejected=self.rejected,
+                known_artist=self.track.artist,
+                known_title=self.track.title,
+                api_key=settings.get_acoustid_api_key() or "",
+            )
+        except Exception:
+            found = []
+        self.finished_lookup.emit(found)
