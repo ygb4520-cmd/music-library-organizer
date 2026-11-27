@@ -9,6 +9,11 @@ from typing import Callable, Dict, List, Optional, Set
 from . import artist_utils, inference, metadata_lookup, settings
 from .models import MetadataSource, PlanItem, Status, TrackInfo
 
+# Two files only count as duplicates in the tag and filename tiers when their
+# lengths are within this many seconds of each other. Tune here.
+DURATION_TOLERANCE_SECONDS = 5.0
+LENGTH_UNKNOWN_NOTE = " (Length unknown -- lower confidence match.)"
+
 _INVALID_WIN_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -144,7 +149,8 @@ def _group_by_key(
             continue
         groups.setdefault(key_fn(item), []).append(item)
 
-    for group_items in _split_by_not_dupes(groups.values(), not_dupes or set()):
+    clusters = [c for g in groups.values() for c in _split_by_duration(g)]
+    for group_items in _split_by_not_dupes(clusters, not_dupes or set()):
         if len(group_items) < 2:
             continue
         group_num += 1
@@ -155,7 +161,32 @@ def _group_by_key(
             item.include = False
             item.dup_method = method
             item.notes = note.format(n=len(group_items) - 1)
+            if item.track.duration is None:
+                item.notes += LENGTH_UNKNOWN_NOTE
     return group_num
+
+
+def _split_by_duration(group: List[PlanItem]) -> List[List[PlanItem]]:
+    """Split a same-key group into clusters whose known lengths are all within
+    DURATION_TOLERANCE_SECONDS of each other (greedy, like _split_by_not_dupes).
+    A file with no known length keeps the old behavior and joins the first
+    cluster (or forms its own cluster if no file has a length)."""
+    known = [i for i in group if i.track.duration is not None]
+    unknown = [i for i in group if i.track.duration is None]
+    clusters: List[List[PlanItem]] = []
+    for it in known:
+        for cluster in clusters:
+            if all(abs(it.track.duration - o.track.duration) <= DURATION_TOLERANCE_SECONDS for o in cluster):
+                cluster.append(it)
+                break
+        else:
+            clusters.append([it])
+    if unknown:
+        if clusters:
+            clusters[0].extend(unknown)
+        else:
+            clusters.append(unknown)
+    return clusters
 
 
 def _group_by_fingerprint(

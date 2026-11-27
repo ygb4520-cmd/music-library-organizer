@@ -3,9 +3,11 @@ the mover (never overwrites, handles already-in-place, cleans only empty folders
 planner, and the self-updater's integrity helpers (trusted URL, checksum parsing/verification)."""
 import os, sys, tempfile, hashlib
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import tempfile as _tf
+os.environ["MLO_UNDO_DIR"] = _tf.mkdtemp(prefix="mlo-undo-test-")  # never write logs to the real app-data folder
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pathlib import Path
-from organizer.models import PlanItem, TrackInfo
+from organizer.models import PlanItem, Status, TrackInfo
 from organizer.mover import MoveWorker
 from organizer import planner, updater
 
@@ -45,6 +47,48 @@ with tempfile.TemporaryDirectory() as d:
     check("emptied folders removed", not (root / "empty_after").exists())
     check("non-empty folders kept (even with non-audio files)", (root / "keep" / "other.txt").exists() and (root / "messy").exists())
     check("source root itself kept", root.exists())
+
+    # ---- undo log ----
+    from organizer import undo_log
+    check("undo log written for the run", undo_log.find_latest_log() is not None)
+    # a file moved again by hand after the run must be skipped, not overwritten
+    (root / "Artist" / "Album" / "b.mp3").rename(root / "Artist" / "b_moved_by_hand.mp3")
+    c_dest_blocker = root / "messy" / "a.mp3"; c_dest_blocker.parent.mkdir(exist_ok=True); c_dest_blocker.write_bytes(b"BLOCK")
+    res = undo_log.undo_last_run()
+    check("undo: no error", res.error is None, res.error)
+    check("undo: file whose original spot is occupied is skipped, not overwritten", c_dest_blocker.read_bytes() == b"BLOCK" and (root / "Artist" / "Album" / "a.mp3").exists() and any("occupied" in r for _, r in res.skipped), res.skipped)
+    check("undo: file moved by hand is skipped", any("b.mp3" in p and "no longer" in r for p, r in res.skipped), res.skipped)
+    check("undo: unmoved-by-hand file restored where it started", (root / "messy" / "t.mp3").read_bytes() == b"NEW")
+    check("undo: log consumed", undo_log.find_latest_log() is None)
+
+with tempfile.TemporaryDirectory() as d:
+    from organizer import undo_log
+    root = Path(d); (root / "m").mkdir(); (root / "e" / "s").mkdir(parents=True)
+    f1 = root / "m" / "1.mp3"; f1.write_bytes(b"1"); f2 = root / "e" / "s" / "2.mp3"; f2.write_bytes(b"2")
+    MoveWorker([item(f1, root / "A" / "B" / "1.mp3"), item(f2, root / "A" / "B" / "2.mp3")], root).run()
+    check("clean run: emptied folder removed", not (root / "e").exists())
+    res = undo_log.undo_last_run()
+    check("undo restores every file to its original path", f1.read_bytes() == b"1" and f2.read_bytes() == b"2" and not res.skipped, res.skipped)
+    check("undo recreates removed folders", (root / "e" / "s").is_dir())
+    check("undo with nothing left reports an error", undo_log.undo_last_run().error is not None)
+
+# ---- planner: duration-aware duplicate grouping ----
+def di(name, dur, artist="Art", title="Song"):
+    t = TrackInfo(path=Path("/m/" + name), ext=".mp3", artist=artist, title=title, duration=dur)
+    return PlanItem(track=t, dest_path=Path("/d/" + name))
+def flag(items):
+    planner._flag_duplicates(items, fingerprint=False)
+l1, l2 = di("a.mp3", 210.0), di("b.mp3", 285.0)
+flag([l1, l2]); check("3:30 vs 4:45 not grouped", l1.status != Status.DUPLICATE and l2.status != Status.DUPLICATE)
+l1, l2 = di("a.mp3", 210.0), di("b.mp3", 211.0)
+flag([l1, l2]); check("3:30 vs 3:31 grouped", l1.status == Status.DUPLICATE and l1.group_id == l2.group_id)
+l1, l2 = di("a.mp3", 210.0), di("b.mp3", 216.0)
+flag([l1, l2]); check("beyond tolerance (6s) not grouped", l1.status != Status.DUPLICATE)
+l1, l2 = di("a.mp3", 210.0), di("b.mp3", None)
+flag([l1, l2]); check("unknown length still grouped, with a note", l2.status == Status.DUPLICATE and "length unknown" in l2.notes.lower() and "length unknown" not in l1.notes.lower(), l2.notes)
+f1, f2 = di("01 - Intro.mp3", 30.0, None, ""), di("Intro.mp3", 200.0, None, "")
+f1.track.title = f2.track.title = None
+flag([f1, f2]); check("filename tier: same name, different lengths not grouped", f1.status != Status.DUPLICATE)
 
 # ---- planner: 'not a duplicate' splitting ----
 def pi(p): return item(p, "/dest/" + Path(p).name)

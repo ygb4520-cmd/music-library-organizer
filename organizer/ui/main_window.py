@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 from .. import settings, updater
 from ..__version__ import __version__
 from ..metadata_worker import MetadataLookupWorker
-from .. import planner
+from .. import planner, undo_log
 from ..models import MetadataSource, Status
 from ..mover import MoveWorker
 from ..scanner import ScanWorker
@@ -111,6 +112,9 @@ class MainWindow(QMainWindow):
 
         review_dups_action = tools_menu.addAction("Review &Duplicates...")
         review_dups_action.triggered.connect(self.review_duplicates)
+
+        undo_action = tools_menu.addAction("&Undo Last Move...")
+        undo_action.triggered.connect(self.undo_last_move)
 
         tools_menu.addSeparator()
         settings_action = tools_menu.addAction("&Settings...")
@@ -464,6 +468,51 @@ class MainWindow(QMainWindow):
             f"Move complete: {len(result.moved)} moved, {len(result.failed)} failed."
         )
         self.start_scan(full=True)
+
+    def undo_last_move(self):
+        if self._move_worker is not None and self._move_worker.isRunning():
+            return
+        path = undo_log.find_latest_log()
+        if path is None:
+            QMessageBox.information(self, "Nothing to Undo", "There is no recorded move to undo.")
+            return
+        try:
+            count = len(undo_log.load_log(path)["moves"])
+        except Exception as exc:
+            QMessageBox.critical(self, "Undo Failed", f"Could not read the undo log:\n{exc}")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Undo Last Move",
+            f"Move {count} file(s) from the last run back to where they were?\n\n"
+            "Files that were moved again since, or whose original spot is now taken, are skipped "
+            "-- nothing is overwritten.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = undo_log.undo_last_run()
+        finally:
+            QApplication.restoreOverrideCursor()
+        if result.error:
+            QMessageBox.critical(self, "Undo Failed", result.error)
+            return
+        lines = [f"Restored: {len(result.restored)}", f"Skipped: {len(result.skipped)}"]
+        if result.skipped:
+            lines.append("\nSkipped files:")
+            for p, reason in result.skipped[:20]:
+                lines.append(f"  {Path(p).name}: {reason}")
+            if len(result.skipped) > 20:
+                lines.append(f"  ...and {len(result.skipped) - 20} more.")
+        QMessageBox.information(self, "Undo Complete", "\n".join(lines))
+        self.statusBar().showMessage(
+            f"Undo complete: {len(result.restored)} restored, {len(result.skipped)} skipped."
+        )
+        if self.source_root:
+            self.start_scan(full=True)
 
     # -- Metadata lookup --------------------------------------------------
 

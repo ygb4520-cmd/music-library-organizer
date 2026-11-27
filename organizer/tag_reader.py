@@ -127,6 +127,18 @@ def _read_bitrate(path: Path) -> Optional[int]:
     return None
 
 
+def _read_duration(path: Path) -> Optional[float]:
+    try:
+        audio = mutagen.File(path)
+        if audio is not None and getattr(audio, "info", None) is not None:
+            length = getattr(audio.info, "length", None)
+            if length is not None and length > 0:
+                return float(length)
+    except Exception:
+        pass
+    return None
+
+
 def read_tags(path: Path) -> TrackInfo:
     ext = path.suffix.lower()
     size = 0
@@ -152,6 +164,7 @@ def read_tags(path: Path) -> TrackInfo:
         track.title = merged.get("title")
         track.track_number = merged.get("track_number")
         track.bitrate = _read_bitrate(path)
+        track.duration = _read_duration(path)
 
         if track.album_artist or track.artist or track.album or track.title:
             track.metadata_source = MetadataSource.TAG

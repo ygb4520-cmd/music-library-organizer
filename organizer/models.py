@@ -31,6 +31,7 @@ class TrackInfo:
     title: Optional[str] = None
     track_number: Optional[str] = None
     bitrate: Optional[int] = None
+    duration: Optional[float] = None  # seconds, from the audio stream info
     size: int = 0
     metadata_source: MetadataSource = MetadataSource.NONE
     read_error: Optional[str] = None

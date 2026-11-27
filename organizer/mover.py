@@ -11,6 +11,7 @@ from typing import List
 from PySide6.QtCore import QThread, Signal
 
 from .models import PlanItem
+from .undo_log import UndoLog
 
 
 class MoveResult:
@@ -37,6 +38,7 @@ class MoveWorker(QThread):
     def run(self):
         result = MoveResult()
         total = len(self.items)
+        undo = UndoLog(self.source_root)
 
         for i, item in enumerate(self.items, start=1):
             if self._cancelled:
@@ -52,6 +54,7 @@ class MoveWorker(QThread):
                     raise FileExistsError(f"Destination already exists: {dest}")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(item.source_path), str(dest))
+                undo.record_move(item.source_path, dest)
                 result.moved.append(item)
             except Exception as exc:
                 item.move_error = str(exc)
@@ -59,6 +62,7 @@ class MoveWorker(QThread):
             self.progress.emit(i, total)
 
         result.cleaned_dirs = self._cleanup_empty_dirs()
+        undo.finish(result.cleaned_dirs)
         self.finished_move.emit(result)
 
     def _cleanup_empty_dirs(self) -> List[Path]:
